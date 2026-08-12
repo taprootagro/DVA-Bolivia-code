@@ -1,0 +1,12 @@
+{
+  "backendProxyConfig": {
+    "supabaseUrl": "https://api-bolivia.dva-agro.com",
+    "supabaseAnonKey": "sb_publishable_QM3OAkja3MEIDunUM9vD0w_wTC7XJX0",
+    "edgeFunctionName": "server",
+    "enabled": true,
+    "chatProvider": "supabase",
+    "imMode": "im-provider-direct",
+    "cmsStorageProvider": "supabase",
+    "mediaCdnBaseUrl": "https://apicdn.dva-agro.com/media"
+  }
+}

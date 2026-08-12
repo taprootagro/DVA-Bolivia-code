@@ -1,0 +1,15 @@
+{
+  "version": "v4",
+  "appName": "TaprootAgro",
+  "minSupportedVersion": "v3",
+  "releaseNotes": "Latest stable release with PWA improvements",
+  "releaseDate": "2026-02-28",
+  "forceUpdate": false,
+  "features": [
+    "PWA update mechanism",
+    "Weekly remote version check",
+    "Multi-language support (20 languages)",
+    "AI pest detection",
+    "Market with two-level categories"
+  ]
+}

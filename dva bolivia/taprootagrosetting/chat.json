@@ -1,0 +1,25 @@
+{
+  "communityUiMode": "store",
+  "chatContact": {
+    "merchantUserId": "e6dbb6c7-1117-4495-abb5-8bc0f47693c8",
+    "channelId": "73221b15-b29c-40f2-92e7-53a80b782bc0",
+    "name": "rick wang",
+    "avatar": "https://lh3.googleusercontent.com/a/ACg8ocKed7CvoEavg1W6g_YinlrXyS9lGHQkVGDs5-6q9iJaVn8eDb4=s96-c",
+    "subtitle": "",
+    "verifiedDomains": [
+      "topagro.com"
+    ],
+    "boundAt": 1779695811990,
+    "boundFrom": "topagro.com",
+    "phone": "",
+    "storeId": "",
+    "imUserId": "",
+    "imProvider": ""
+  },
+  "userProfile": {
+    "name": "",
+    "avatar": "",
+    "phone": "",
+    "pickupAddress": ""
+  }
+}

@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content" />
+
+  <!-- PWA Meta -->
+  <meta name="theme-color" content="#059669" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="DVA Bolivia" />
+  <meta name="application-name" content="DVA Bolivia" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="msapplication-TileColor" content="#059669" />
+
+  <!-- SEO & Description -->
+  <meta name="description" content="DVA Bolivia - GO FUTURE.TOGETHER" />
+  <meta name="keywords" content="DVA Bolivia, agriculture, smart farming, PWA" />
+
+  <!-- Open Graph -->
+  <meta property="og:title" content="DVA Bolivia" />
+  <meta property="og:description" content="GO FUTURE.TOGETHER" />
+  <meta property="og:type" content="website" />
+  <meta property="og:image" content="/icon-512.svg" />
+
+  <!-- Icons -->
+  <link rel="icon" type="image/svg+xml" href="/icon-192.svg" />
+  <link rel="apple-touch-icon" href="/icon-192.svg" />
+
+  <!-- PWA Manifest -->
+  <link rel="manifest" href="/manifest.json" />
+
+  <title>DVA Bolivia</title>
+
+  <!-- PWA manifest：始终使用同源 /manifest.json（勿用 blob，避免 Chrome 判定 start_url/scope 无效） -->
+
+  <!-- Auto-detect icon format: PNG preferred, SVG fallback -->
+  <script>
+    (function(){
+      var img = new Image();
+      img.onload = function(){
+        // PNG exists → update favicon & apple-touch-icon
+        var icon = document.querySelector('link[rel="icon"]');
+        if (icon) { icon.href = '/icon-192.png'; icon.type = 'image/png'; }
+        var apple = document.querySelector('link[rel="apple-touch-icon"]');
+        if (apple) apple.href = '/icon-192.png';
+        var og = document.querySelector('meta[property="og:image"]');
+        if (og) og.content = '/icon-512.png';
+      };
+      img.src = '/icon-192.png';
+    })();
+  </script>
+
+  <!--
+    PWA Install Prompt 最早时机捕获：
+    某些浏览器（Edge Android、Samsung Internet）在 JS bundle 加载完之前
+    就触发 beforeinstallprompt，模块级监听器来不及注册会丢失事件。
+    此 inline script 在 HTML 解析阶段同步执行，100% 不会错过。
+    useInstallPrompt.ts 从 window.__pwaInstallPrompt 读取。
+  -->
+  <script>
+    window.__pwaInstallPrompt = null;
+    window.addEventListener('beforeinstallprompt', function(e) {
+      e.preventDefault();
+      window.__pwaInstallPrompt = e;
+    });
+  </script>
+
+  <!-- iOS Safari 100vh 修正：用 visualViewport API 精确设置真实视口高度 -->
+  <script>
+    (function(){
+      var root = document.documentElement;
+      var tid = 0;
+
+      function setAppHeight(){
+        // standalone/fullscreen PWA：innerHeight 即完整屏幕
+        var isStandalone = window.matchMedia('(display-mode: standalone)').matches ||
+                           window.matchMedia('(display-mode: fullscreen)').matches ||
+                           (window.navigator).standalone === true;
+
+        var h;
+        if (isStandalone && window.visualViewport) {
+          // PWA 模式：取 innerHeight 和 visualViewport.height 的较小值
+          // 键盘弹出时 visualViewport.height 会缩小，innerHeight 不变
+          // 键盘收起时两者相等，取 innerHeight（全屏高度）
+          h = Math.min(window.innerHeight, window.visualViewport.height);
+        } else if (isStandalone) {
+          h = window.innerHeight;
+        } else if (window.visualViewport) {
+          // 普通浏览器：visualViewport.height 排除浏览器工具栏
+          h = window.visualViewport.height;
+        } else {
+          // 兜底：innerHeight（可能包含工具栏区）
+          h = window.innerHeight;
+        }
+
+        root.style.setProperty('--app-height', h + 'px');
+      }
+
+      // 防抖：避免连续 resize 事件导致高频重排（小米浏览器工具栏动画时会连续触发）
+      function debouncedSetHeight(){
+        clearTimeout(tid);
+        tid = setTimeout(setAppHeight, 50);
+      }
+
+      // 键盘场景专用：更快响应（16ms = 一帧），避免键盘弹出时页面跳动
+      function fastSetHeight(){
+        clearTimeout(tid);
+        tid = setTimeout(setAppHeight, 16);
+      }
+
+      // 首次测量：等一帧确保浏览器工具栏已定位完毕
+      requestAnimationFrame(function(){
+        setAppHeight();
+        // 再延迟 300ms 二次测量，防止某些浏���器(小米/Samsung)工具栏动画未完成
+        setTimeout(setAppHeight, 300);
+      });
+
+      window.addEventListener('resize', debouncedSetHeight);
+
+      // orientationchange：横竖屏切换后延迟测量（部分安卓浏览器需要等动画结束）
+      window.addEventListener('orientationchange', function(){
+        setTimeout(setAppHeight, 150);
+        setTimeout(setAppHeight, 500);
+      });
+
+      // pageshow：从 bfcache 恢复时重新测量（iOS Safari 常见）
+      window.addEventListener('pageshow', function(e){
+        if (e.persisted) setAppHeight();
+      });
+
+      if (window.visualViewport) {
+        // visualViewport resize 由键盘弹出/收起触发，需要快速响应
+        window.visualViewport.addEventListener('resize', fastSetHeight);
+        // scroll 事件在 iOS 键盘弹出/收起时触发
+        window.visualViewport.addEventListener('scroll', fastSetHeight);
+      }
+    })();
+  </script>
+
+  <!-- Preconnect to critical cross-origin hosts (saves 200-500ms DNS+TLS per host) -->
+  <link rel="dns-prefetch" href="https://cdn.jsdelivr.net" />
+  <link rel="dns-prefetch" href="https://commondatastorage.googleapis.com" />
+</head>
+<body style="background-color:#ffffff">
+  <div id="root">
+    <!-- Inline loading skeleton — visible immediately on slow networks, replaced when React renders -->
+    <div id="initial-loader" style="display:flex;align-items:center;justify-content:center;min-height:100vh;font-family:system-ui;background:#ffffff;flex-direction:column">
+      <div style="text-align:center">
+        <div style="color:#111827;font-size:22px;font-weight:700;letter-spacing:0.5px">DVA Bolivia</div>
+        <div style="color:#6b7280;font-size:13px;margin-top:8px">GO FUTURE.TOGETHER</div>
+      </div>
+    </div>
+  </div>
+  <script type="module" src="/src/main.tsx"></script>
+
+  <!-- ============================================================
+    CRASH RECOVERY SCRIPT (inline, no external dependencies)
+    
+    This runs INSIDE index.html so it works even when:
+    - JS chunks fail to load (404, CDN down)
+    - React crashes on startup
+    - Service Worker serves corrupted cache
+    - App gets stuck in a crash-reload loop
+    
+    How it works:
+    1. Waits 10 seconds after page load
+    2. If #root is still empty (React never rendered):
+       a. First time: silently clear Cache API + IndexedDB + unregister SW, then reload
+       b. Second time: show recovery UI (Retry / Reset buttons)
+    3. Detects crash loops: if crashed 3+ times in 60 seconds, auto-resets
+    
+    Note: localStorage is NEVER cleared (accounting data lives there).
+  ============================================================ -->
+  <script>
+    (function() {
+      var CRASH_KEY = '__taproot_crash_count__';
+      var CRASH_TS_KEY = '__taproot_crash_ts__';
+      var SILENT_KEY = '__taproot_silent_recovery__';
+      var MAX_CRASHES = 3;
+      var CRASH_WINDOW = 60000; // 60 seconds
+
+      // Track crash count for loop detection
+      try {
+        var now = Date.now();
+        var lastTs = parseInt(sessionStorage.getItem(CRASH_TS_KEY) || '0', 10);
+        var count = parseInt(sessionStorage.getItem(CRASH_KEY) || '0', 10);
+        
+        // Reset counter if outside crash window
+        if (now - lastTs > CRASH_WINDOW) count = 0;
+        
+        count++;
+        sessionStorage.setItem(CRASH_KEY, String(count));
+        sessionStorage.setItem(CRASH_TS_KEY, String(now));
+
+        // Crash loop detected: auto-reset
+        if (count >= MAX_CRASHES) {
+          sessionStorage.removeItem(CRASH_KEY);
+          sessionStorage.removeItem(CRASH_TS_KEY);
+          sessionStorage.removeItem(SILENT_KEY);
+          window.location.href = '/sw-reset';
+          return;
+        }
+      } catch(e) { /* sessionStorage unavailable */ }
+
+      /**
+       * Silent self-heal: clear Cache API + IndexedDB + unregister SW
+       * Does NOT touch localStorage (accounting data, user prefs, etc.)
+       */
+      function silentReset() {
+        var tasks = [];
+
+        // Unregister all Service Workers
+        if ('serviceWorker' in navigator) {
+          tasks.push(
+            navigator.serviceWorker.getRegistrations().then(function(regs) {
+              return Promise.all(regs.map(function(r) { return r.unregister(); }));
+            }).catch(function() {})
+          );
+        }
+
+        // Clear all Cache API caches
+        if ('caches' in window) {
+          tasks.push(
+            caches.keys().then(function(names) {
+              return Promise.all(names.map(function(n) { return caches.delete(n); }));
+            }).catch(function() {})
+          );
+        }
+
+        // Delete all IndexedDB databases
+        if ('indexedDB' in window && typeof indexedDB.databases === 'function') {
+          tasks.push(
+            indexedDB.databases().then(function(dbs) {
+              dbs.forEach(function(db) {
+                if (db.name) indexedDB.deleteDatabase(db.name);
+              });
+            }).catch(function() {})
+          );
+        }
+
+        return Promise.all(tasks);
+      }
+
+      // Clear crash counter on successful load
+      window.addEventListener('load', function() {
+        setTimeout(function() {
+          var root = document.getElementById('root');
+          if (root && root.children.length > 0) {
+            // App rendered successfully — clear all recovery flags
+            try {
+              sessionStorage.removeItem(CRASH_KEY);
+              sessionStorage.removeItem(CRASH_TS_KEY);
+              sessionStorage.removeItem(SILENT_KEY);
+            } catch(e) {}
+            return;
+          }
+
+          // App failed to render after 10 seconds
+          var alreadyTriedSilent = false;
+          try { alreadyTriedSilent = sessionStorage.getItem(SILENT_KEY) === '1'; } catch(e) {}
+
+          if (!alreadyTriedSilent) {
+            // ---- First failure: silent self-heal + auto-reload ----
+            try { sessionStorage.setItem(SILENT_KEY, '1'); } catch(e) {}
+            silentReset().then(function() {
+              window.location.reload();
+            });
+            return;
+          }
+
+          // ---- Second failure: show recovery UI to user ----
+          try { sessionStorage.removeItem(SILENT_KEY); } catch(e) {}
+          if (root) {
+            root.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;min-height:100vh;font-family:system-ui;background:#f0fdf4;color:#065f46;text-align:center;padding:2rem">'
+              + '<div>'
+              + '<div style="width:64px;height:64px;margin:0 auto 1.5rem;border-radius:50%;background:#dcfce7;display:flex;align-items:center;justify-content:center"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></div>'
+              + '<h2 style="margin:0 0 0.5rem">Failed to load</h2>'
+              + '<p style="color:#6b7280;margin:0 0 1.5rem;max-width:300px">The app could not start. This may be a temporary network issue.</p>'
+              + '<div style="display:flex;flex-direction:column;gap:0.5rem;align-items:center">'
+              + '<button onclick="location.reload()" style="padding:0.75rem 2rem;background:#10b981;color:white;border:none;border-radius:0.75rem;font-size:1rem;cursor:pointer;width:200px">Retry</button>'
+              + '<button onclick="location.href=\'/sw-reset\'" style="padding:0.75rem 2rem;background:white;color:#065f46;border:1px solid #d1d5db;border-radius:0.75rem;font-size:1rem;cursor:pointer;width:200px">Reset App</button>'
+              + '</div>'
+              + '</div></div>';
+          }
+        }, 10000);
+      });
+    })();
+  </script>
+</body>
+</html>

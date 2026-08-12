@@ -1,0 +1,160 @@
+{
+  "banners": [
+    {
+      "id": 1,
+      "alt": "demo",
+      "url": "https://cdn.topagro.com/demo/photo-1.jpeg",
+      "title": "demo",
+      "content": "<p>article demo</p><p></p><p>探索现代农业的无限可能，从智能种植到精准管理，TaprootAgro引领农业革命。</p><p></p><p>Explore the boundless possibilities of modern agriculture—from smart cultivation to precision management—as TaprootAgro leads the agricultural revolution.</p>"
+    },
+    {
+      "id": 2,
+      "alt": "demo",
+      "url": "https://cdn.topagro.com/demo/photo-3.jpeg",
+      "title": "demo",
+      "content": "<p>article demo</p><p></p><p>见证丰收的喜悦，TaprootAgro提供全面的农业解决方案，帮助您实现丰收。</p><p></p><p>Witness the joy of a bountiful harvest—TaprootAgro provides comprehensive agricultural solutions to help you achieve a successful yield.</p>"
+    },
+    {
+      "id": 3,
+      "alt": "demo",
+      "url": "https://cdn.topagro.com/demo/photo-2.jpeg",
+      "title": "demo",
+      "content": "<p>article demo</p><p></p><p>拥抱绿色生态，TaprootAgro致力于可持续农业发展，提供环保的种植方案。</p><p></p><p>Embracing a green ecosystem, TaprootAgro is dedicated to the development of sustainable agriculture, providing eco-friendly cultivation solutions.</p>"
+    }
+  ],
+  "navigation": [
+    {
+      "id": 1,
+      "icon": "ScanLine",
+      "title": "病虫识别",
+      "subtitle": "AI智能检测"
+    },
+    {
+      "id": 2,
+      "icon": "Bot",
+      "title": "AI助手",
+      "subtitle": "智能问答"
+    },
+    {
+      "id": 3,
+      "icon": "Calculator",
+      "title": "收益统计",
+      "subtitle": "数据分析"
+    },
+    {
+      "id": 4,
+      "icon": "MapPin",
+      "title": "农田地图",
+      "subtitle": "位置管理"
+    }
+  ],
+  "liveStreams": [
+    {
+      "id": 1,
+      "title": "New products",
+      "navWaze": false,
+      "viewers": "1234",
+      "videoUrl": "https://cdn.topagro.com/demo/demo.mp4",
+      "shareText": "DEMO",
+      "thumbnail": "https://cdn.topagro.com/demo/photo-4.jpeg",
+      "navAddress": "CBD",
+      "navAmapMap": true,
+      "navEnabled": true,
+      "shareTitle": "DEMO",
+      "navBaiduMap": false,
+      "navLatitude": "117.15",
+      "navAppleMaps": false,
+      "navCreatedAt": 1778642789165,
+      "navLongitude": "36.67",
+      "shareEnabled": true,
+      "navCoordSystem": "bd09",
+      "navDisplayDays": 90
+    }
+  ],
+  "articles": [
+    {
+      "id": 1,
+      "date": "2天前",
+      "title": "Spring is a critical period for wheat growth..",
+      "views": "1.2k",
+      "author": "农业专家",
+      "content": "<p>article demo</p><p></p><p>春季是小麦生长的关键时期...</p><p>Spring is a critical period for wheat growth...</p>",
+      "category": "种植技术",
+      "thumbnail": "https://cdn.topagro.com/demo/photo-4.jpeg"
+    },
+    {
+      "id": 2,
+      "date": "3天前",
+      "title": "Common diseases and pests of corn include...",
+      "views": "856",
+      "author": "植保专家",
+      "content": "<p>article demo</p><p></p><p>玉米常见病虫害包括...</p><p>Common diseases and pests of corn include...</p>",
+      "category": "病虫害",
+      "thumbnail": "https://cdn.topagro.com/demo/photo-4.jpeg"
+    },
+    {
+      "id": 3,
+      "date": "5天前",
+      "title": "Scientific fertilization is the key to increasing crop yields.",
+      "views": "642",
+      "author": "土壤专家",
+      "content": "<p>article demo</p><p></p><p>科学施肥是提高作物产量的关键...</p><p>Scientific fertilization is the key to increasing crop yields.</p>",
+      "category": "施肥管理",
+      "thumbnail": "https://cdn.topagro.com/demo/photo-4.jpeg"
+    },
+    {
+      "id": 4,
+      "date": "1周前",
+      "title": "Temperature and humidity control during the seedling-raising stage directly affects...",
+      "views": "923",
+      "author": "种植达人",
+      "content": "<p>article demo</p><p></p><p>育秧期的温湿度控制直接影响...</p><p>Temperature and humidity control during the seedling-raising stage directly affects...</p>",
+      "category": "栽培技术",
+      "thumbnail": "https://cdn.topagro.com/demo/photo-4.jpeg"
+    },
+    {
+      "id": 5,
+      "date": "3天前",
+      "title": "article demo",
+      "views": "1.5k",
+      "author": "设施农业专家",
+      "content": "<p>article demo</p><p></p><p>智能温室大棚通过物联网技术...</p><p>demo</p>",
+      "category": "设施农业",
+      "thumbnail": "https://cdn.topagro.com/demo/photo-4.jpeg"
+    },
+    {
+      "id": 6,
+      "date": "4天前",
+      "title": "article demo",
+      "views": "789",
+      "author": "灌溉专家",
+      "content": "<p>article demo</p><p></p><p>水肥一体化是现代农业的重要技术...</p><p></p>",
+      "category": "灌溉技术",
+      "thumbnail": "https://cdn.topagro.com/demo/photo-4.jpeg"
+    },
+    {
+      "id": 7,
+      "date": "6天前",
+      "title": "article demo",
+      "views": "1.1k",
+      "author": "果树专家",
+      "content": "<p>article demo</p><p></p><p>果树修剪是果树栽培管理的重要环节...</p><p></p>",
+      "category": "果树管理",
+      "thumbnail": "https://cdn.topagro.com/demo/photo-4.jpeg"
+    }
+  ],
+  "videoFeed": {
+    "title": "农业短视频",
+    "description": "观看最新农业技术视频",
+    "videoSources": []
+  },
+  "homeIcons": {
+    "aiAssistantIconUrl": "",
+    "aiAssistantLabel": "",
+    "statementIconUrl": "",
+    "statementLabel": "",
+    "liveCoverUrl": "",
+    "liveTitle": "",
+    "liveBadge": ""
+  }
+}

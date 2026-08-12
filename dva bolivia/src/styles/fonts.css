@@ -1,0 +1,6 @@
+/* Multi-script system font stack for 20-language support */
+/* Primary: system-ui covers most scripts on modern devices */
+/* Fallbacks: platform-specific fonts for CJK, Arabic, Thai, Bengali, Myanmar etc. */
+/* Google Fonts loaded only for Myanmar (Burmese) which lacks system font on many devices */
+
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+Myanmar:wght@400;500;700&display=swap');

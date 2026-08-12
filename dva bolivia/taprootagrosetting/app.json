@@ -1,0 +1,25 @@
+{
+  "profileEditCooldownSeconds": 300,
+  "appBranding": {
+    "logoUrl": "https://apicdn.dva-agro.com/media/logo.png",
+    "appName": "DVA Bolivia",
+    "slogan": "GO FUTURE.TOGETHER"
+  },
+  "splashScreen": {
+    "imageUrl": "https://apicdn.dva-agro.com/media/splash.png",
+    "minDisplayMs": 2000,
+    "maxResourceWaitMs": 4000,
+    "showSkipButton": true
+  },
+  "desktopIcon": {
+    "appName": "DVA Bolivia",
+    "icon192Url": "https://apicdn.dva-agro.com/media/icon-192.png",
+    "icon512Url": "https://apicdn.dva-agro.com/media/icon-512.png"
+  },
+  "filing": {
+    "icpNumber": "",
+    "icpUrl": "",
+    "policeNumber": "",
+    "policeUrl": ""
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "aiModelConfig": {
+    "modelUrl": "",
+    "labelsUrl": "",
+    "enableLocalModel": false
+  },
+  "cloudAIConfig": {
+    "enabled": true,
+    "providerName": "通义千问",
+    "edgeFunctionName": "ai-vision-proxy",
+    "modelId": "qwen3.7-flash",
+    "systemPrompt": "",
+    "maxTokens": 512,
+    "clientDailyLimit": 15,
+    "clientCooldownSeconds": 20,
+    "clientWindowPerMin": 6,
+    "supabaseUrl": "",
+    "supabaseAnonKey": "",
+    "allowUnauthenticatedUse": false
+  }
+}

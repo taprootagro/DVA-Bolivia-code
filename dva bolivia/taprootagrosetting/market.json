@@ -1,0 +1,251 @@
+{
+  "currencySymbol": "¥",
+  "marketPage": {
+    "categories": [
+      {
+        "id": "herbicide",
+        "name": "her",
+        "_type": "category",
+        "subCategories": [
+          "demo1",
+          "demo2",
+          "demo3"
+        ]
+      },
+      {
+        "id": "insecticide",
+        "name": "ins",
+        "_type": "category",
+        "subCategories": [
+          "demo1",
+          "demo2",
+          "demo3"
+        ]
+      },
+      {
+        "id": "fungicide",
+        "name": "fun",
+        "_type": "category",
+        "subCategories": [
+          "demo1",
+          "demo2",
+          "demo3"
+        ]
+      },
+      {
+        "id": "Rice",
+        "name": "rice package",
+        "subCategories": [
+          "Pre-emergence",
+          "Post-emergence"
+        ]
+      },
+      {
+        "id": "corn",
+        "name": "corn package",
+        "subCategories": [
+          "corn package"
+        ]
+      }
+    ],
+    "products": [
+      {
+        "id": 1,
+        "name": "demo",
+        "image": "https://cdn.topagro.com/demo/bottle.webp",
+        "price": "¥68",
+        "stock": 100,
+        "category": "herbicide",
+        "description": "强效除草剂",
+        "subCategory": "demo1",
+        "specifications": ""
+      },
+      {
+        "id": 5,
+        "name": "demo",
+        "image": "https://cdn.topagro.com/demo/bottle.webp",
+        "price": "¥78",
+        "stock": 110,
+        "category": "insecticide",
+        "description": "接触即死，快速见效",
+        "subCategory": "demo2",
+        "specifications": ""
+      },
+      {
+        "id": 11,
+        "name": "demo",
+        "image": "https://cdn.topagro.com/demo/bottle.webp",
+        "price": "¥68",
+        "stock": 90,
+        "category": "fungicide",
+        "description": "预防病害",
+        "subCategory": "demo3",
+        "specifications": ""
+      },
+      {
+        "id": 17,
+        "name": "demo",
+        "_type": "product",
+        "image": "https://cdn.topagro.com/demo/photo-4.jpeg",
+        "price": "¥125",
+        "stock": 150,
+        "category": "fertilizer",
+        "description": "促进叶片生长",
+        "subCategory": "demo",
+        "specifications": ""
+      },
+      {
+        "id": 18,
+        "name": "demo",
+        "image": "https://cdn.topagro.com/demo/bottle.webp",
+        "price": "$100",
+        "stock": 0,
+        "category": "herbicide",
+        "videoUrl": "",
+        "description": "",
+        "subCategory": "demo1",
+        "specifications": ""
+      },
+      {
+        "id": 19,
+        "name": "demo",
+        "image": "https://cdn.topagro.com/demo/bottle.webp",
+        "price": "99",
+        "stock": 0,
+        "category": "herbicide",
+        "videoUrl": "",
+        "description": "",
+        "subCategory": "demo2",
+        "specifications": ""
+      },
+      {
+        "id": 20,
+        "name": "demo",
+        "image": "https://cdn.topagro.com/demo/bottle.webp",
+        "price": "99",
+        "stock": 0,
+        "category": "herbicide",
+        "videoUrl": "",
+        "description": "",
+        "subCategory": "demo3",
+        "specifications": ""
+      },
+      {
+        "id": 21,
+        "name": "demo",
+        "image": "https://cdn.topagro.com/demo/bottle.webp",
+        "price": "99",
+        "stock": 0,
+        "category": "herbicide",
+        "videoUrl": "",
+        "description": "",
+        "subCategory": "demo2",
+        "specifications": ""
+      },
+      {
+        "id": 22,
+        "name": "demo",
+        "image": "https://cdn.topagro.com/demo/bottle.webp",
+        "price": "99",
+        "stock": 0,
+        "category": "insecticide",
+        "videoUrl": "",
+        "description": "",
+        "subCategory": "demo2",
+        "specifications": ""
+      },
+      {
+        "id": 23,
+        "name": "demo",
+        "image": "https://cdn.topagro.com/demo/bottle.webp",
+        "price": "99",
+        "stock": 0,
+        "category": "insecticide",
+        "videoUrl": "",
+        "description": "",
+        "subCategory": "demo1",
+        "specifications": ""
+      },
+      {
+        "id": 24,
+        "name": "demo",
+        "image": "https://cdn.topagro.com/demo/bottle.webp",
+        "price": "99",
+        "stock": 0,
+        "category": "corn",
+        "videoUrl": "",
+        "description": "",
+        "subCategory": "corn package",
+        "specifications": ""
+      },
+      {
+        "id": 25,
+        "name": "demo",
+        "image": "https://cdn.topagro.com/demo/bottle.webp",
+        "price": "99",
+        "stock": 0,
+        "category": "corn",
+        "videoUrl": "",
+        "description": "",
+        "subCategory": "corn package",
+        "specifications": ""
+      },
+      {
+        "id": 26,
+        "name": "demo",
+        "image": "https://cdn.topagro.com/demo/bottle.webp",
+        "price": "99",
+        "stock": 0,
+        "category": "corn",
+        "videoUrl": "",
+        "description": "",
+        "subCategory": "corn package",
+        "specifications": ""
+      },
+      {
+        "id": 27,
+        "name": "demo",
+        "image": "https://cdn.topagro.com/demo/bottle.webp",
+        "price": "99",
+        "stock": 0,
+        "category": "Rice",
+        "videoUrl": "",
+        "description": "",
+        "subCategory": "Pre-emergence",
+        "specifications": ""
+      },
+      {
+        "id": 28,
+        "name": "demo",
+        "image": "https://cdn.topagro.com/demo/bottle.webp",
+        "price": "99",
+        "stock": 0,
+        "category": "Rice",
+        "videoUrl": "",
+        "description": "",
+        "subCategory": "Pre-emergence",
+        "specifications": ""
+      },
+      {
+        "id": 29,
+        "name": "demo",
+        "image": "https://cdn.topagro.com/demo/bottle.webp",
+        "price": "",
+        "stock": 0,
+        "category": "Rice",
+        "videoUrl": "",
+        "description": "",
+        "subCategory": "Post-emergence",
+        "specifications": ""
+      }
+    ],
+    "advertisements": [
+      {
+        "id": 1,
+        "image": "https://cdn.topagro.com/demo/photo-4.jpeg",
+        "title": "ads",
+        "content": "<p>TaprootAgro 2026年春季农业技术培训班正式开放报名！</p>"
+      }
+    ]
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "aboutUs": {
+    "title": "关于我们",
+    "content": "<p>我们是一家专注于农业技术的公司，致力于提供最先进的农业解决方案。</p><p></p><p>We are a company specializing in agricultural technology, dedicated to providing the most advanced agricultural solutions.</p>"
+  },
+  "privacyPolicy": {
+    "title": "隐私政策",
+    "content": "<p>我们尊重并保护所有使用我们服务的用户的隐私。</p><p></p><p>We respect and protect the privacy of all users who use our services.</p>"
+  },
+  "termsOfService": {
+    "title": "用户协议",
+    "content": "<p>欢迎使用我们的服务！</p><p>welcome</p>"
+  },
+  "technicalSupport": {
+    "title": "技术支持",
+    "content": "<p>本项目由taprootagro提供技术支持。我们提供全流程技术支持，助力您零门槛实现同款产品的快速部署与稳定运行。如有需求，欢迎联系咨询。</p><p><br></p><p>Support by taprootagro.</p><p><span>Fully open-source. We offer full-cycle technical support for barrier-free deployment and stable operation. Contact us to get started.</span></p><p><br></p><p><strong>Taprootagro Technology Limited</strong></p><p>Website:&nbsp;www.taprootagro.com</p><p>Email:&nbsp;Info@taprootagro.com</p>"
+  }
+}
