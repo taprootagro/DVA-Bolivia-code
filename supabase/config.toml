@@ -1,0 +1,40 @@
+# Supabase CLI 配置（与本目录下 functions/、migrations/ 同级）
+# entrypoint 路径相对于本文件所在目录（supabase/）；与官方文档「relative to config.toml」一致。
+# 本仓库 Edge 源码使用 index.tsx；未配置时 CLI 默认查找 index.ts，会导致部署失败。
+# verify_jwt：按函数覆盖；deploy-functions.sh 对 verify=on 的函数**不传** --no-verify-jwt（与下表一致）。
+
+[functions.server]
+entrypoint = "./functions/server/index.tsx"
+verify_jwt = false
+
+[functions.ai-vision-proxy]
+entrypoint = "./functions/ai-vision-proxy/index.tsx"
+# 允许免登录 AI（函数内按 app_config.allowUnauthenticatedUse + IP 限流）；已登录用户仍校验 JWT
+verify_jwt = false
+
+[functions.chat-supabase]
+entrypoint = "./functions/chat-supabase/index.tsx"
+# 与 ai-vision-proxy 一致：网关校验 JWT；函数内仍 extractUserJwt + getAuthUserId + 频道权限 + CHAT_RL
+verify_jwt = true
+
+[functions.merchant-bind-resolve]
+entrypoint = "./functions/merchant-bind-resolve/index.tsx"
+# 扫码绑定：网关 JWT + 函数内再以 JWT 作为唯一 farmer 身份（禁止仅 anon 伪造 farmerUserId）
+verify_jwt = true
+
+[functions.merchant-bind-qr-url]
+entrypoint = "./functions/merchant-bind-qr-url/index.tsx"
+# 门店端：登录后拉取当日带 HMAC 的扫码路径（需 MERCHANT_BIND_HMAC_SECRET）
+verify_jwt = true
+
+[auth]
+site_url = "https://app.dva-agro.com"
+external_url = "https://api-bolivia.dva-agro.com/auth/v1"
+additional_redirect_urls = ["https://app.dva-agro.com/auth/callback", "https://dva-agro.com/**", "https://app.dva-agro.com/**", "https://api-bolivia.dva-agro.com/**", "com.dva-agro.app://**"]
+
+[auth.external.google]
+enabled = true
+# Local dev only — production Google OAuth secret MUST be set in Supabase Dashboard
+# (Authentication → Providers → Google). Never commit client secrets to git.
+client_id = "env(GOOGLE_CLIENT_ID)"
+secret = "env(GOOGLE_CLIENT_SECRET)"

@@ -421,8 +421,9 @@ export default defineConfig({
     // 显式声明输出目录（Vite 默认值），确保部署平台自动检测
     outDir: 'dist',
     rollupOptions: {
-      // Capacitor 插件是原生运行时依赖，不参与 Web 打包
-      external: ['@capacitor/app'],
+      // PWA 浏览器包不加载 capacitor-loader，external 无影响。
+      // VITE_NATIVE_BUILD=1 时 loader 会 static import @capacitor/app，必须打进 bundle。
+      external: process.env.VITE_NATIVE_BUILD === '1' ? [] : ['@capacitor/app'],
       output: {
         manualChunks(id: string) {
           // React 核心库
