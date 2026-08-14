@@ -972,6 +972,36 @@ export const app = {
   },
 
   /**
+   * Deep link / OAuth callback（Custom Tabs 回到 App 时触发 appUrlOpen）
+   */
+  async onAppUrlOpen(callback: (url: string) => void): Promise<() => void> {
+    if (!isNative()) return () => {};
+
+    const mod = loadPlugin('@capacitor/app');
+    if (!mod) return () => {};
+
+    const handle = await mod.App.addListener('appUrlOpen', (event: { url: string }) => {
+      callback(event.url);
+    });
+    return () => handle.remove();
+  },
+
+  /** 冷启动时由 URL 打开 App（OAuth 回调可能走此路径） */
+  async getLaunchUrl(): Promise<string | null> {
+    if (!isNative()) return null;
+
+    const mod = loadPlugin('@capacitor/app');
+    if (!mod?.App?.getLaunchUrl) return null;
+
+    try {
+      const result = await mod.App.getLaunchUrl();
+      return result?.url ?? null;
+    } catch {
+      return null;
+    }
+  },
+
+  /**
    * 退出应用（仅 Android）
    */
   async exitApp(): Promise<void> {
@@ -1434,30 +1464,88 @@ export const toast = {
 // ============================================================================
 
 // ── 二维码扫描 ───────────────────────────────────────────────────────────
+// @capacitor-community/barcode-scanner 把相机预览画在 WebView 后面。
+// 必须 hideBackground + 把页面做成透明，否则用户只看到黑屏转圈，
+// 而 startScan() 会一直等到扫到码才 resolve。
+const QR_SCANNER_ACTIVE_CLASS = 'qr-scanner-active';
+
+function resolveBarcodeScanner(mod: any): any | null {
+  return mod?.BarcodeScanner ?? mod?.default?.BarcodeScanner ?? null;
+}
+
+function setQrScannerChrome(active: boolean) {
+  if (typeof document === 'undefined') return;
+  document.documentElement.classList.toggle(QR_SCANNER_ACTIVE_CLASS, active);
+  document.body.classList.toggle(QR_SCANNER_ACTIVE_CLASS, active);
+}
+
+async function restoreBarcodeScannerBackground(BarcodeScanner: any | null) {
+  try {
+    if (BarcodeScanner && typeof BarcodeScanner.showBackground === 'function') {
+      await BarcodeScanner.showBackground();
+    }
+  } catch { /* ignore */ }
+  setQrScannerChrome(false);
+}
+
 export const barcodeScanner = {
   async scan(): Promise<{ content: string; format: string } | null> {
     if (!isNative()) return null; // Web 端无降级方案（需要第三方库）
 
     const mod = loadPlugin('@capacitor-community/barcode-scanner');
-    if (!mod) return null;
+    const BarcodeScanner = resolveBarcodeScanner(mod);
+    if (!BarcodeScanner || typeof BarcodeScanner.startScan !== 'function') return null;
+    // hideBackground 缺失时不要挂起 startScan：相机会在不透明 WebView 后空转
+    if (typeof BarcodeScanner.hideBackground !== 'function') return null;
 
-    const { BarcodeScanner } = mod;
-
-    // 检查权限
     const status = await BarcodeScanner.checkPermission({ force: true });
     if (!status.granted) return null;
 
-    const result = await BarcodeScanner.startScan();
-    if (result.hasContent) {
-      return { content: result.content!, format: result.format || 'unknown' };
+    setQrScannerChrome(true);
+    try {
+      await BarcodeScanner.hideBackground();
+      const result = await BarcodeScanner.startScan();
+      if (result.hasContent) {
+        return { content: result.content!, format: result.format || 'unknown' };
+      }
+      return null;
+    } catch {
+      return null;
+    } finally {
+      await restoreBarcodeScannerBackground(BarcodeScanner);
     }
-    return null;
   },
 
   async stopScan(): Promise<void> {
     if (!isNative()) return;
-    const mod = loadPlugin('@capacitor-community/barcode-scanner');
-    if (mod) await mod.BarcodeScanner.stopScan();
+    const BarcodeScanner = resolveBarcodeScanner(
+      loadPlugin('@capacitor-community/barcode-scanner'),
+    );
+    try {
+      if (BarcodeScanner && typeof BarcodeScanner.stopScan === 'function') {
+        await BarcodeScanner.stopScan();
+      }
+    } catch { /* ignore */ }
+    await restoreBarcodeScannerBackground(BarcodeScanner);
+  },
+
+  async setTorch(on: boolean): Promise<boolean> {
+    if (!isNative()) return false;
+    const BarcodeScanner = resolveBarcodeScanner(
+      loadPlugin('@capacitor-community/barcode-scanner'),
+    );
+    if (!BarcodeScanner) return false;
+    try {
+      if (on && typeof BarcodeScanner.enableTorch === 'function') {
+        await BarcodeScanner.enableTorch();
+        return true;
+      }
+      if (!on && typeof BarcodeScanner.disableTorch === 'function') {
+        await BarcodeScanner.disableTorch();
+        return true;
+      }
+    } catch { /* ignore */ }
+    return false;
   },
 };
 

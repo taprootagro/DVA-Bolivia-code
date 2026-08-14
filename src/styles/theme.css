@@ -636,6 +636,24 @@ html[data-native] .phone-shell-inner {
   background-color: transparent;
 }
 
+/*
+ * Native QR scanner (@capacitor-community/barcode-scanner):
+ * camera preview is behind the WebView. Hide app chrome and punch
+ * a transparent hole so the preview is visible.
+ */
+html.qr-scanner-active,
+html.qr-scanner-active body,
+html.qr-scanner-active #root {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+html.qr-scanner-active body {
+  visibility: hidden;
+}
+html.qr-scanner-active .qr-scanner-ui {
+  visibility: visible;
+}
+
 /* 直播 feed 嵌入视频（YouTube / Vimeo / B 站） */
 .video-feed-embed {
   display: block;

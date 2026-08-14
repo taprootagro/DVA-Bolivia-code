@@ -440,18 +440,44 @@ export function LoginPage() {
       return;
     }
 
+    const redirectTo = `${window.location.origin}/auth/callback`;
+
     try {
+      // Native：Custom Tabs（@capacitor/browser）+ appUrlOpen 深链，避免整页跳出到系统 Chrome
+      if (bridge.isNative()) {
+        setIsLoading(true);
+        const { data, error } = await client.auth.signInWithOAuth({
+          provider,
+          options: {
+            redirectTo,
+            skipBrowserRedirect: true,
+          },
+        });
+        if (error) {
+          setErrorMsg(error.message || t.login.oauthError);
+          return;
+        }
+        if (data?.url) {
+          await bridge.browser.open(data.url);
+        } else {
+          setErrorMsg(t.login.oauthError);
+        }
+        return;
+      }
+
       const { error } = await client.auth.signInWithOAuth({
         provider,
-        options: {
-          redirectTo: `${window.location.origin}/auth/callback`,
-        },
+        options: { redirectTo },
       });
       if (error) {
         setErrorMsg(error.message || t.login.oauthError);
       }
     } catch (err: any) {
       setErrorMsg(err?.message || t.login.oauthError);
+    } finally {
+      if (bridge.isNative()) {
+        setIsLoading(false);
+      }
     }
   };
 

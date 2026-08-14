@@ -14,6 +14,7 @@ import { ConfigProvider } from '../hooks/ConfigProvider';
 import { useDynamicManifest } from '../hooks/useDynamicManifest';
 import { isNative, preloadVoices, splashScreen } from '../utils/capacitor-bridge';
 import { useNativePushRegistration } from '../hooks/useNativePushRegistration';
+import { useNativeOAuthCallback } from '../hooks/useNativeOAuthCallback';
 import { usePhoneShellEnabled } from '../utils/phoneViewport';
 
 // Inner shell: PWA head tags + outlet (routes use ConfigProvider above)
@@ -22,6 +23,7 @@ function RootInner() {
   const phoneShell = usePhoneShellEnabled(pathname);
   useDynamicManifest();
   useNativePushRegistration();
+  useNativeOAuthCallback();
 
   const outlet = <Outlet />;
 

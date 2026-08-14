@@ -87,8 +87,9 @@ export function QRScannerCapture({ onScan, onClose }: QRScannerCaptureProps) {
 
     (async () => {
       try {
+        setTorchSupported(true);
         const result = await bridge.barcodeScanner.scan();
-        if (cancelled) return;
+        if (cancelled || scannedRef.current) return;
         if (result?.content) {
           scannedRef.current = true;
           if (navigator.vibrate) navigator.vibrate(100);
@@ -98,7 +99,7 @@ export function QRScannerCapture({ onScan, onClose }: QRScannerCaptureProps) {
       } catch {
         /* fall through to web camera */
       }
-      if (!cancelled) {
+      if (!cancelled && !scannedRef.current) {
         setNativeScanning(false);
         setUseWebCamera(true);
       }
@@ -128,12 +129,18 @@ export function QRScannerCapture({ onScan, onClose }: QRScannerCaptureProps) {
         setTorchSupported(managed.torchSupported);
 
         if (videoRef.current) {
-          videoRef.current.srcObject = managed.stream;
-          videoRef.current.onloadedmetadata = () => {
-            videoRef.current?.play()
-              .then(() => setCameraReady(true))
-              .catch(() => setCameraReady(true));
+          const video = videoRef.current;
+          video.srcObject = managed.stream;
+          const markReady = () => {
+            if (!cancelled) setCameraReady(true);
           };
+          video.onloadedmetadata = () => {
+            void video.play().then(markReady).catch(markReady);
+          };
+          // Android WebView 有时不触发 loadedmetadata，直接 play 作为兜底
+          void video.play().then(markReady).catch(() => {
+            /* loadedmetadata handler retries */
+          });
         }
       } catch {
         setCameraFailed(true);
@@ -204,12 +211,18 @@ export function QRScannerCapture({ onScan, onClose }: QRScannerCaptureProps) {
 
   // ── Torch ─────────────────────────────────────────────────────
   const toggleTorch = async () => {
+    if (nativeScanning && !useWebCamera) {
+      const ok = await bridge.barcodeScanner.setTorch(!torchOn);
+      if (ok) setTorchOn(!torchOn);
+      return;
+    }
     const success = await cameraManager.toggleTorch(!torchOn);
     if (success) setTorchOn(!torchOn);
   };
 
   // ── Close ─────────────────────────────────────────────────────
   const handleClose = () => {
+    scannedRef.current = true;
     setAnimPhase("leaving");
     cancelAnimationFrame(rafRef.current);
     void bridge.barcodeScanner.stopScan();
@@ -241,9 +254,11 @@ export function QRScannerCapture({ onScan, onClose }: QRScannerCaptureProps) {
   }, [onScan]);
 
   // ── Render ────────────────────────────────────────────────────
+  const nativePreview = nativeScanning && !useWebCamera;
+
   return (
     <div
-      className="fixed inset-0 bg-black z-50 flex flex-col"
+      className={`qr-scanner-ui fixed inset-0 z-50 flex flex-col ${nativePreview ? "bg-transparent" : "bg-black"}`}
       style={{
         transform: animPhase === "visible" ? "none" : "scale(0.96)",
         opacity: animPhase === "visible" ? 1 : 0,
@@ -262,11 +277,7 @@ export function QRScannerCapture({ onScan, onClose }: QRScannerCaptureProps) {
 
       {/* ═══════ 主内容区 ═══════ */}
       <div className="flex-1 relative flex items-center justify-center overflow-hidden">
-        {nativeScanning && !useWebCamera ? (
-          <div className="absolute inset-0 flex items-center justify-center bg-black">
-            <div className="w-10 h-10 border-3 border-white/30 border-t-white rounded-full animate-spin" />
-          </div>
-        ) : cameraFailed ? (
+        {cameraFailed ? (
           /* 相机不可用降级 — 纯图标，无文字 */
           <div className="flex flex-col items-center gap-6">
             <button
@@ -284,19 +295,20 @@ export function QRScannerCapture({ onScan, onClose }: QRScannerCaptureProps) {
           </div>
         ) : (
           <>
-            {/* 相机预览 — 未就绪时隐藏，避免短暂显示浏览器默认播放按钮 */}
-            <video
-              ref={videoRef}
-              autoPlay
-              playsInline
-              muted
-              className={`w-full h-full object-cover transition-opacity duration-200 ${cameraReady ? 'opacity-100' : 'opacity-0'}`}
-              style={{ background: 'black' }}
-            />
+            {/* Web 相机预览；原生扫码时预览在 WebView 后方，这里保持透明 */}
+            {useWebCamera && (
+              <video
+                ref={videoRef}
+                autoPlay
+                playsInline
+                muted
+                className={`w-full h-full object-cover transition-opacity duration-200 ${cameraReady ? 'opacity-100' : 'opacity-0'}`}
+                style={{ background: 'black' }}
+              />
+            )}
 
-            {/* 暗角遮罩 + 透明框 */}
+            {/* 暗角遮罩：只用 box-shadow 挖孔，避免整层半透明挡住原生相机 */}
             <div className="absolute inset-0 pointer-events-none">
-              <div className="absolute inset-0 bg-black/50" />
               <div
                 className="absolute bg-transparent"
                 style={{
@@ -326,8 +338,8 @@ export function QRScannerCapture({ onScan, onClose }: QRScannerCaptureProps) {
               </div>
             </div>
 
-            {/* 加载中 spinner */}
-            {!cameraReady && (
+            {/* Web 相机加载中；原生预览不转圈，否则会盖住相机 */}
+            {useWebCamera && !cameraReady && (
               <div className="absolute inset-0 flex items-center justify-center bg-black/60">
                 <div className="w-10 h-10 border-3 border-white/30 border-t-white rounded-full animate-spin" />
               </div>
