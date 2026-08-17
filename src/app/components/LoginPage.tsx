@@ -6,6 +6,7 @@ import { setUserLoggedIn, setServerUserId, setAccessToken } from "../utils/auth"
 import { useHomeConfig } from "../hooks/useHomeConfig";
 import { useAppIcon } from "../hooks/useAppIcon";
 import { bridge } from "../utils/capacitor-bridge";
+import { nativeOAuthRedirectTo } from "../hooks/useNativeOAuthCallback";
 import { SecondaryView } from "./SecondaryView";
 import { CmsMediaImg } from "./CmsMediaImg";
 import { sanitizeRichHtml } from "../utils/sanitizeRichHtml";
@@ -440,10 +441,10 @@ export function LoginPage() {
       return;
     }
 
-    const redirectTo = `${window.location.origin}/auth/callback`;
+    const redirectTo = nativeOAuthRedirectTo();
 
     try {
-      // Native：Custom Tabs（@capacitor/browser）+ appUrlOpen 深链，避免整页跳出到系统 Chrome
+      // Native：Custom Tabs + 包名 scheme 深链（appId://auth/callback）
       if (bridge.isNative()) {
         setIsLoading(true);
         const { data, error } = await client.auth.signInWithOAuth({
