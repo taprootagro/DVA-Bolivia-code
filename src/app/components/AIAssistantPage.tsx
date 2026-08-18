@@ -17,6 +17,35 @@ import { MockModeBanner } from "./MockModeBanner";
 import { isProductionBuild } from "../utils/productionGuard";
 
 const TTS_PREF_KEY = 'ai_tts_enabled';
+const AI_PENDING_PHOTO_KEY = '__taproot_ai_pending_photo__';
+let aiPendingPhotoMem: string | null = null;
+
+function stashAiPendingPhoto(dataUrl: string) {
+  aiPendingPhotoMem = dataUrl;
+  try {
+    sessionStorage.setItem(AI_PENDING_PHOTO_KEY, dataUrl);
+  } catch {
+    /* quota / private mode */
+  }
+}
+
+function peekAiPendingPhoto(): string | null {
+  if (aiPendingPhotoMem) return aiPendingPhotoMem;
+  try {
+    return sessionStorage.getItem(AI_PENDING_PHOTO_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function clearAiPendingPhoto() {
+  aiPendingPhotoMem = null;
+  try {
+    sessionStorage.removeItem(AI_PENDING_PHOTO_KEY);
+  } catch {
+    /* ignore */
+  }
+}
 
 function readFileAsDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -171,7 +200,7 @@ export function AIAssistantPage({ onClose }: AIAssistantPageProps) {
   // 系统相机 input ref
   const cameraInputRef = useRef<HTMLInputElement>(null);
 
-  const [image, setImage] = useState<string | null>(null);
+  const [image, setImage] = useState<string | null>(() => peekAiPendingPhoto());
   const [status, setStatus] = useState<Status>('idle');
   const [progress, setProgress] = useState(0);
   const [detecting, setDetecting] = useState(false);
@@ -425,32 +454,38 @@ export function AIAssistantPage({ onClose }: AIAssistantPageProps) {
     const clean = stripMarkdown(text);
     if (!clean) return;
 
-    // 打断旧任务
     if (ttsAbortRef.current) ttsAbortRef.current.abort();
-    textToSpeech.stop().catch(() => { /* ignore */ });
-
     const controller = new AbortController();
     ttsAbortRef.current = controller;
     setTtsSpeaking(true);
     setTtsPaused(false);
 
     const lang = languageToSpeechTag(language);
-    textToSpeech
-      .speakQueue(clean, {
+    const nativeDelayMs = isNative() ? 350 : 0;
+
+    const run = async () => {
+      await textToSpeech.stop().catch(() => { /* ignore */ });
+      if (controller.signal.aborted) return;
+      if (nativeDelayMs) {
+        await new Promise((r) => setTimeout(r, nativeDelayMs));
+      }
+      if (controller.signal.aborted) return;
+      await textToSpeech.speakQueue(clean, {
         lang,
         langFallbacks: speechTagFallbacks(language),
         rate: ttsRateForLanguage(language),
         pitch: 1.0,
         signal: controller.signal,
-      })
-      .finally(() => {
-        // 只有当当前任务仍是最新任务时才清空 speaking 状态
-        if (ttsAbortRef.current === controller) {
-          ttsAbortRef.current = null;
-          setTtsSpeaking(false);
-          setTtsPaused(false);
-        }
       });
+    };
+
+    run().finally(() => {
+      if (ttsAbortRef.current === controller) {
+        ttsAbortRef.current = null;
+        setTtsSpeaking(false);
+        setTtsPaused(false);
+      }
+    });
   }, [ttsEnabled, stripMarkdown, language]);
 
   // Cleanup TTS on unmount
@@ -721,14 +756,19 @@ export function AIAssistantPage({ onClose }: AIAssistantPageProps) {
     }
   }, [image, cloudOnlyMode, sessionReady]);
 
-  // 系统相机拍照 — Native 优先走 bridge.camera，失败回退 file input
+  // 系统相机拍照 — Native 优先走 bridge.camera；取消不打开 file input。
+  // 拍照结果写入 sessionStorage，避免 Android 相机页杀掉 WebView 后丢图。
   const applyPhotoDataUrl = useCallback((dataUrl: string) => {
+    stashAiPendingPhoto(dataUrl);
     setImage(dataUrl);
     setResults([]);
     setDone(false);
   }, []);
 
-  const takePhotoViaNativeOrFile = useCallback(async (fileInputRef: RefObject<HTMLInputElement | null>) => {
+  const captureNativeOrClickFile = useCallback(async (
+    fileInputRef: RefObject<HTMLInputElement | null>,
+    onDataUrl: (dataUrl: string) => void,
+  ) => {
     if (isNative()) {
       try {
         const photo = await bridge.camera.takePhoto({
@@ -736,19 +776,18 @@ export function AIAssistantPage({ onClose }: AIAssistantPageProps) {
           quality: 80,
           width: 1920,
         });
-        if (photo) {
-          const dataUrl = await bridge.camera.photoToDataUrl(photo);
-          if (dataUrl) {
-            applyPhotoDataUrl(dataUrl);
-            return;
-          }
+        if (!photo) return;
+        const dataUrl = await bridge.camera.photoToDataUrl(photo);
+        if (dataUrl) {
+          onDataUrl(dataUrl);
+          return;
         }
       } catch {
         /* fall through to file input */
       }
     }
     fileInputRef.current?.click();
-  }, [applyPhotoDataUrl]);
+  }, []);
 
   const onCameraFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
@@ -766,9 +805,7 @@ export function AIAssistantPage({ onClose }: AIAssistantPageProps) {
     const f = e.target.files?.[0];
     if (!f) return;
     try {
-      setImage(await readFileAsDataUrl(f));
-      setResults([]);
-      setDone(false);
+      applyPhotoDataUrl(await readFileAsDataUrl(f));
     } catch {
       /* ignore */
     }
@@ -787,40 +824,7 @@ export function AIAssistantPage({ onClose }: AIAssistantPageProps) {
       return;
     }
     if (chatCameraRef.current) chatCameraRef.current.value = '';
-    // 作为用户消息发送图片
-    setChatMessages(prev => [...prev, { role: 'user', text: '', image: imgSrc }]);
-    if (!cloudAiEnabled) {
-      setChatMessages(prev => [...prev, { role: 'ai', text: `⚠️ ${a.cloudAiDisabled}` }]);
-      return;
-    }
-    // 自动发给AI进行追问
-    setChatReplying(true);
-    try {
-      const previousContext = (deepAnalysisResult?.analysis || '') +
-        chatMessages.map(m => `\n\n[${m.role === 'user' ? 'User' : 'AI'}]: ${m.image ? '[Photo]' : m.text}`).join('');
-      const aiExtras = await buildAIRequestExtras();
-      const reply = await cloudAIService.followUpWithImage(
-        imgSrc,
-        '[User sent a follow-up photo for further analysis]',
-        previousContext,
-        language,
-        aiExtras,
-      );
-      setChatMessages(prev => [...prev, { role: 'ai', text: reply }]);
-      refreshGuardState();
-    } catch (err: any) {
-      const msg = err?.message || '';
-      const isNetworkError = msg.includes('network') || msg.includes('fetch') || msg.includes('Failed to fetch') || 
-                             msg.includes('NetworkError') || msg.includes('offline') || err?.name === 'TypeError';
-      const cloudAIEnabled = config.cloudAIConfig?.enabled === true;
-      const errorMsg = (isNetworkError && cloudAIEnabled)
-        ? a.networkErrorHint
-        : formatCloudAiChatError(msg, a);
-      setChatMessages(prev => [...prev, { role: 'ai', text: `⚠️ ${errorMsg}` }]);
-      refreshGuardState();
-    } finally {
-      setChatReplying(false);
-    }
+    await sendChatImage(imgSrc);
   };
 
   const onChatFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1010,6 +1014,7 @@ export function AIAssistantPage({ onClose }: AIAssistantPageProps) {
   };
 
   const reset = () => {
+    clearAiPendingPhoto();
     setImage(null);
     setResults([]);
     setDone(false);
@@ -1060,6 +1065,7 @@ export function AIAssistantPage({ onClose }: AIAssistantPageProps) {
       const detections = isCloudOnly ? [] : results.map((d) => ({ className: d.className, score: d.score }));
       const aiExtras = await buildAIRequestExtras({ includeLocation: true });
       const result = await cloudAIService.analyze(image, detections, language, aiExtras);
+      clearAiPendingPhoto();
       setDeepAnalysisResult(result);
       setIsLocalAIResult(false); // Mark as cloud AI result
       if (isCloudOnly) setDone(true);
@@ -1917,7 +1923,7 @@ export function AIAssistantPage({ onClose }: AIAssistantPageProps) {
             {showCamMenu && (
               <div className={`absolute bottom-full mb-2 bg-white rounded-2xl shadow-2xl py-2 z-20 w-40 overflow-hidden ${isRTL ? 'left-0' : 'right-0'}`}>
                 <button
-                  onClick={() => { setShowCamMenu(false); void takePhotoViaNativeOrFile(chatCameraRef); }}
+                  onClick={() => { setShowCamMenu(false); void captureNativeOrClickFile(chatCameraRef, (url) => void sendChatImage(url)); }}
                   className="w-full px-4 py-3 flex items-center gap-3 active:bg-gray-50 transition-colors"
                 >
                   <Camera className="w-4 h-4 text-emerald-600" />
@@ -2110,7 +2116,7 @@ export function AIAssistantPage({ onClose }: AIAssistantPageProps) {
 
                 <div className="w-full max-w-xs space-y-3">
                   <button
-                    onClick={() => void takePhotoViaNativeOrFile(cameraInputRef)}
+                    onClick={() => void captureNativeOrClickFile(cameraInputRef, applyPhotoDataUrl)}
                     className="w-full flex items-center justify-center gap-2 bg-emerald-600 text-white py-3.5 rounded-2xl active:scale-[0.97] transition-transform shadow-lg shadow-emerald-200/60"
                   >
                     <Camera className="w-5 h-5" /><span className="font-medium">{a.takePhoto}</span>

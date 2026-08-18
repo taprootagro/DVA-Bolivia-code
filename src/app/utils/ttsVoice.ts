@@ -23,7 +23,7 @@ const KNOWN_GOOD_RE =
   /ting-ting|meijia|sin-ji|yuna|samantha|karen|moira|zira|heera|kyoko|luciana|monica|paulina|thomas|amélie|maged|tarik|lekha|tessa|veena|damayanti|milena|yuri|anna|melina|nora|ellen|xander|maria|joana|sara|fiona|veena|rishi|grandpa|grandma|flo|sandy|shelley|grandpa|superstar|rocko|sandy|reed|sandy|grandpa|grandma|grandpa|grandma/i;
 
 function normalizeLang(lang: string): string {
-  return lang.toLowerCase().replace(/_/g, '-');
+  return (lang || '').toLowerCase().replace(/_/g, '-');
 }
 
 function langPrefix(lang: string): string {
@@ -34,6 +34,7 @@ function langPrefix(lang: string): string {
 export function scoreVoice(v: VoiceLike, targetLang: string): number {
   const voiceLang = normalizeLang(v.lang);
   const target = normalizeLang(targetLang);
+  if (!voiceLang || !target) return -1;
   const prefix = langPrefix(target);
   const region = target.split('-')[1];
 
@@ -95,6 +96,17 @@ export function resolveVoiceForLang<T extends VoiceLike>(
     }
   }
   return null;
+}
+
+/** Last-resort: first listed voice, still tagged with the requested language. */
+export function resolveVoiceForLangOrDefault<T extends VoiceLike>(
+  voices: T[],
+  langTags: string[],
+): ResolvedVoice<T> | null {
+  const matched = resolveVoiceForLang(voices, langTags);
+  if (matched) return matched;
+  if (!voices.length) return null;
+  return { voice: voices[0], voiceIndex: 0, lang: langTags[0] || voices[0].lang };
 }
 
 // ── Web speechSynthesis voice cache ───────────────────────────────────────

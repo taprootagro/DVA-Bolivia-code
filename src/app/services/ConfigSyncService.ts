@@ -20,6 +20,7 @@ const CMS_FIELD_KEYS = [
   'appBranding',
   'splashScreen',
   'homeIcons',
+  'chatContact',
   'communityUiMode',
   'desktopIcon',
   'pushConfig',
@@ -359,6 +360,16 @@ export function mergeRemoteAppConfigIntoLocal(
   ) as unknown as HomePageConfig;
 
   const keepChat = chatContactLooksBound(local.chatContact);
+  const remoteChat = fromRemote.chatContact;
+  const chatContact = keepChat
+    ? {
+        ...local.chatContact,
+        // Admin CMS whitelist must follow the server, even when this device has a bound merchant.
+        verifiedDomains: Array.isArray(remoteChat?.verifiedDomains)
+          ? remoteChat.verifiedDomains
+          : local.chatContact.verifiedDomains,
+      }
+    : remoteChat;
   const backendProxyConfig = deepMerge(
     local.backendProxyConfig as unknown as Record<string, unknown>,
     (fromRemote.backendProxyConfig ?? {}) as unknown as Record<string, unknown>,
@@ -368,7 +379,7 @@ export function mergeRemoteAppConfigIntoLocal(
   const base: HomePageConfig = {
     ...fromRemote,
     userProfile: local.userProfile,
-    chatContact: keepChat ? local.chatContact : fromRemote.chatContact,
+    chatContact,
     backendProxyConfig,
   };
 

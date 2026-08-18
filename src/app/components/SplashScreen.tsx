@@ -255,7 +255,7 @@ export function SplashScreen() {
                 <CmsMediaImg
                   src={config.appBranding.logoUrl}
                   alt="Logo"
-                  className="w-full h-full object-contain p-2"
+                  className="w-full h-full object-cover"
                 />
               ) : (
                 <span

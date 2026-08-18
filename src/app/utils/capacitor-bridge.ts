@@ -31,6 +31,7 @@ import {
   loadVoicesWeb,
   preloadVoicesWeb,
   resolveVoiceForLang,
+  resolveVoiceForLangOrDefault,
   type ResolvedVoice,
   type VoiceLike,
 } from './ttsVoice';
@@ -157,7 +158,9 @@ export async function readNativePhotoToDataUrl(
 ): Promise<string | null> {
   if (photo.dataUrl?.trim()) return photo.dataUrl.trim();
   if (photo.base64?.trim()) {
-    return `data:image/jpeg;base64,${photo.base64.trim()}`;
+    const raw = photo.base64.trim();
+    if (raw.startsWith('data:')) return raw;
+    return `data:image/jpeg;base64,${raw}`;
   }
 
   const webPath = photo.webPath?.trim();
@@ -1806,6 +1809,16 @@ export const speechRecognition = {
 let cachedNativeVoices: VoiceLike[] | null = null;
 let nativeVoicesReadyPromise: Promise<VoiceLike[]> | null = null;
 
+/** ESM / CJS interop: workflow registers `import * as CapTextToSpeech`. */
+function getTtsPlugin(): any {
+  const mod = loadPlugin('@capacitor-community/text-to-speech');
+  if (!mod) return null;
+  if (mod.TextToSpeech?.speak) return mod.TextToSpeech;
+  if (mod.default?.TextToSpeech?.speak) return mod.default.TextToSpeech;
+  if (typeof mod.speak === 'function') return mod;
+  return null;
+}
+
 async function loadVoicesNative(): Promise<VoiceLike[]> {
   if (!isNative()) return [];
   if (cachedNativeVoices && cachedNativeVoices.length > 0) {
@@ -1814,14 +1827,22 @@ async function loadVoicesNative(): Promise<VoiceLike[]> {
   if (nativeVoicesReadyPromise) return nativeVoicesReadyPromise;
 
   nativeVoicesReadyPromise = (async () => {
-    const mod = loadPlugin('@capacitor-community/text-to-speech');
-    if (!mod?.TextToSpeech?.getSupportedVoices) return [];
+    const tts = getTtsPlugin();
+    if (!tts?.getSupportedVoices) {
+      nativeVoicesReadyPromise = null;
+      return [];
+    }
     try {
-      const result = await mod.TextToSpeech.getSupportedVoices();
+      const result = await tts.getSupportedVoices();
       const list: VoiceLike[] = result?.voices ?? [];
-      cachedNativeVoices = list;
+      if (list.length > 0) {
+        cachedNativeVoices = list;
+      } else {
+        nativeVoicesReadyPromise = null;
+      }
       return list;
     } catch {
+      nativeVoicesReadyPromise = null;
       return [];
     }
   })();
@@ -1834,10 +1855,22 @@ async function resolveTtsVoice(
 ): Promise<ResolvedVoice | null> {
   if (isNative()) {
     const voices = await loadVoicesNative();
+    // Native TTS can speak with lang only — do not force a mismatched voice index.
     return resolveVoiceForLang(voices, langTags);
   }
   const voices = await loadVoicesWeb();
-  return resolveVoiceForLang(voices, langTags);
+  return resolveVoiceForLangOrDefault(voices, langTags);
+}
+
+let lastNativeTtsStopAt = 0;
+let nativeTtsStopChain: Promise<void> = Promise.resolve();
+
+async function waitAfterNativeTtsStop(): Promise<void> {
+  await nativeTtsStopChain;
+  const elapsed = Date.now() - lastNativeTtsStopAt;
+  if (elapsed < 180) {
+    await new Promise((r) => setTimeout(r, 180 - elapsed));
+  }
 }
 
 /** Warm voice lists for Web and native (call on app startup). */
@@ -1920,22 +1953,41 @@ export const textToSpeech = {
       ? options.langFallbacks
       : [options.lang];
     const resolved = options._resolved ?? await resolveTtsVoice(langTags);
-    if (!resolved) return;
 
     if (isNative()) {
-      const mod = loadPlugin('@capacitor-community/text-to-speech');
-      if (mod?.TextToSpeech?.speak) {
-        const payload: Record<string, unknown> = {
-          text,
-          lang: resolved.lang,
-          rate: options.rate ?? 1.0,
-          pitch: options.pitch ?? 1.0,
-          volume: options.volume ?? 1.0,
-          voice: resolved.voiceIndex,
-        };
-        if (getPlatform() === 'ios') payload.category = 'playback';
-        await mod.TextToSpeech.speak(payload);
-        return;
+      const tts = getTtsPlugin();
+      if (tts?.speak) {
+        await waitAfterNativeTtsStop();
+        const rate = options.rate ?? 1.0;
+        const pitch = options.pitch ?? 1.0;
+        const volume = options.volume ?? 1.0;
+        const langFull = resolved?.lang || options.lang;
+        const langPrefix = (options.lang || '').split('-')[0];
+        const voiceIndex =
+          typeof resolved?.voiceIndex === 'number' && resolved.voiceIndex >= 0
+            ? resolved.voiceIndex
+            : undefined;
+
+        const attempts: Record<string, unknown>[] = [];
+        const base: Record<string, unknown> = { text, rate, pitch, volume };
+        if (getPlatform() === 'ios') base.category = 'playback';
+        if (voiceIndex != null && langFull) {
+          attempts.push({ ...base, lang: langFull, voice: voiceIndex });
+        }
+        if (langFull) attempts.push({ ...base, lang: langFull });
+        if (langPrefix && langPrefix !== langFull) {
+          attempts.push({ ...base, lang: langPrefix });
+        }
+        attempts.push({ ...base });
+
+        for (const payload of attempts) {
+          try {
+            await tts.speak(payload);
+            return;
+          } catch {
+            /* try next payload — unsupported locale / voice index is common on Android */
+          }
+        }
       }
     }
 
@@ -1943,8 +1995,8 @@ export const textToSpeech = {
 
     return new Promise((resolve) => {
       const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = resolved.lang;
-      utterance.voice = resolved.voice as SpeechSynthesisVoice;
+      utterance.lang = resolved?.lang || options.lang;
+      if (resolved?.voice) utterance.voice = resolved.voice as SpeechSynthesisVoice;
       utterance.rate = options.rate ?? 1.0;
       utterance.pitch = options.pitch ?? 1.0;
       utterance.volume = options.volume ?? 1.0;
@@ -1977,7 +2029,7 @@ export const textToSpeech = {
     if (opts.signal?.aborted) return;
     const langTags = opts.langFallbacks?.length ? opts.langFallbacks : [opts.lang];
     const resolved = await resolveTtsVoice(langTags);
-    if (!resolved) return;
+    if (!resolved && !isNative() && !('speechSynthesis' in window)) return;
 
     const chunks = splitIntoChunks(text, opts.maxLen ?? 180);
     for (const chunk of chunks) {
@@ -1985,7 +2037,7 @@ export const textToSpeech = {
       try {
         await this.speak({
           text: chunk,
-          lang: resolved.lang,
+          lang: resolved?.lang || opts.lang,
           langFallbacks: langTags,
           rate: opts.rate,
           pitch: opts.pitch,
@@ -2000,9 +2052,14 @@ export const textToSpeech = {
 
   async stop(): Promise<void> {
     if (isNative()) {
-      const mod = loadPlugin('@capacitor-community/text-to-speech');
-      if (mod?.TextToSpeech?.stop) {
-        try { await mod.TextToSpeech.stop(); } catch { /* ignore */ }
+      const tts = getTtsPlugin();
+      if (tts?.stop) {
+        lastNativeTtsStopAt = Date.now();
+        nativeTtsStopChain = nativeTtsStopChain.then(async () => {
+          try { await tts.stop(); } catch { /* ignore */ }
+          lastNativeTtsStopAt = Date.now();
+        });
+        await nativeTtsStopChain;
         return;
       }
     }
@@ -2011,13 +2068,14 @@ export const textToSpeech = {
 
   async pause(): Promise<void> {
     if (isNative()) {
-      const mod = loadPlugin('@capacitor-community/text-to-speech');
-      // 插件通常没有 pause（不标准），在原生侧只能 stop
-      if (mod?.TextToSpeech?.pause) {
-        try { await mod.TextToSpeech.pause(); return; } catch { /* fallthrough */ }
+      const tts = getTtsPlugin();
+      if (tts?.pause) {
+        try { await tts.pause(); return; } catch { /* fallthrough */ }
       }
-      if (mod?.TextToSpeech?.stop) {
-        try { await mod.TextToSpeech.stop(); } catch { /* ignore */ }
+      if (tts?.stop) {
+        lastNativeTtsStopAt = Date.now();
+        try { await tts.stop(); } catch { /* ignore */ }
+        lastNativeTtsStopAt = Date.now();
       }
       return;
     }
@@ -2026,9 +2084,9 @@ export const textToSpeech = {
 
   async resume(): Promise<void> {
     if (isNative()) {
-      const mod = loadPlugin('@capacitor-community/text-to-speech');
-      if (mod?.TextToSpeech?.resume) {
-        try { await mod.TextToSpeech.resume(); } catch { /* ignore */ }
+      const tts = getTtsPlugin();
+      if (tts?.resume) {
+        try { await tts.resume(); } catch { /* ignore */ }
       }
       return;
     }
@@ -2037,10 +2095,10 @@ export const textToSpeech = {
 
   async isSpeaking(): Promise<boolean> {
     if (isNative()) {
-      const mod = loadPlugin('@capacitor-community/text-to-speech');
-      if (mod?.TextToSpeech?.isSpeaking) {
+      const tts = getTtsPlugin();
+      if (tts?.isSpeaking) {
         try {
-          const r = await mod.TextToSpeech.isSpeaking();
+          const r = await tts.isSpeaking();
           return !!(r && (r.value ?? r));
         } catch { /* ignore */ }
       }
@@ -2054,8 +2112,7 @@ export const textToSpeech = {
    */
   isAvailable(): boolean {
     if (isNative()) {
-      const mod = loadPlugin('@capacitor-community/text-to-speech');
-      return !!mod?.TextToSpeech?.speak;
+      return !!getTtsPlugin()?.speak;
     }
     return typeof window !== 'undefined' && 'speechSynthesis' in window;
   },

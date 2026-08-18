@@ -27,6 +27,13 @@ describe("readNativePhotoToDataUrl", () => {
     expect(result).toBe("data:image/jpeg;base64,YWJj");
   });
 
+  it("does not double-wrap base64 that is already a data URL", async () => {
+    const result = await readNativePhotoToDataUrl({
+      base64: "data:image/png;base64,YWJj",
+    });
+    expect(result).toBe("data:image/png;base64,YWJj");
+  });
+
   it("passes through webPath that is already data URL", async () => {
     const data = "data:image/webp;base64,UklGRg==";
     const result = await readNativePhotoToDataUrl({ webPath: data });

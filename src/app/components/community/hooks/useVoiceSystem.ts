@@ -50,13 +50,11 @@ export function useVoiceSystem(chatMessages: ChatMessage[], currentUserId: strin
 
   // 离开页面时停止TTS播放
   useEffect(() => {
-    if (location.pathname !== '/home/community') {
-      stopAllTTS();
-      // 如果正在播放语音消息，也暂停
-      if (playingVoiceId) {
-        stopCurrentAudio();
-        setPlayingVoiceId(null);
-      }
+    if (location.pathname.startsWith('/home/community')) return;
+    stopAllTTS();
+    if (playingVoiceId) {
+      stopCurrentAudio();
+      setPlayingVoiceId(null);
     }
   }, [location.pathname, playingVoiceId, stopCurrentAudio]);
 
@@ -164,24 +162,45 @@ export function useVoiceSystem(chatMessages: ChatMessage[], currentUserId: strin
   }, [chatMessages, stopCurrentAudio]);
 
   // 新收到的文字消息自动朗读（仅实时消息，跳过打开线程时拉取的历史）
-  const LIVE_TTS_MAX_AGE_MS = 8000;
-  const prevMsgCountRef = useRef(chatMessages.length);
+  const LIVE_TTS_MAX_AGE_MS = 120000;
+  const seenMsgIdsRef = useRef<Set<string>>(new Set());
+  const seededChannelRef = useRef<string | null>(null);
   useEffect(() => {
-    if (chatMessages.length > prevMsgCountRef.current) {
-      const newMsgs = chatMessages.slice(prevMsgCountRef.current);
-      const now = Date.now();
-      for (const msg of newMsgs) {
-        if (
-          msg.type === "text" &&
-          msg.senderId !== currentUserId &&
-          ttsEnabledRef.current &&
-          now - msg.timestamp < LIVE_TTS_MAX_AGE_MS
-        ) {
-          speakText(msg.content);
-        }
+    if (chatMessages.length === 0) return;
+    const channel = chatMessages[0]?.channelName ?? '';
+    const now = Date.now();
+    const speakIncoming = (msg: ChatMessage) => {
+      if (msg.type !== 'text' || msg.senderId === currentUserId) return;
+      if (!ttsEnabledRef.current) return;
+      const age = now - (msg.timestamp || now);
+      if (Number.isFinite(age) && age >= LIVE_TTS_MAX_AGE_MS) return;
+      speakText(msg.content);
+    };
+
+    if (seededChannelRef.current !== channel) {
+      const switching = seededChannelRef.current !== null;
+      seededChannelRef.current = channel;
+      const previousIds = seenMsgIdsRef.current;
+      seenMsgIdsRef.current = new Set(chatMessages.map((m) => m.id));
+      if (switching) return;
+      // First fill of an empty thread: speak only brand-new incoming (not a history dump).
+      const freshIncoming = chatMessages.filter((m) => {
+        if (previousIds.has(m.id)) return false;
+        if (m.type !== 'text' || m.senderId === currentUserId) return false;
+        const age = now - (m.timestamp || now);
+        return !Number.isFinite(age) || age < 15000;
+      });
+      if (chatMessages.length <= freshIncoming.length) {
+        for (const msg of freshIncoming) speakIncoming(msg);
       }
+      return;
     }
-    prevMsgCountRef.current = chatMessages.length;
+
+    for (const msg of chatMessages) {
+      if (seenMsgIdsRef.current.has(msg.id)) continue;
+      seenMsgIdsRef.current.add(msg.id);
+      speakIncoming(msg);
+    }
   }, [chatMessages, currentUserId, speakText]);
 
   const toggleTts = useCallback(() => {

@@ -38,7 +38,7 @@ export function PWAInstallBanner({ install }: Props) {
     <img
       src={customIcon}
       alt=""
-      className="w-11 h-11 rounded-xl flex-shrink-0 shadow-sm object-contain p-0.5 bg-white"
+      className="w-11 h-11 rounded-xl flex-shrink-0 shadow-sm object-cover"
     />
   ) : (
     <div className="w-11 h-11 rounded-xl bg-emerald-600 flex items-center justify-center flex-shrink-0 shadow-sm">

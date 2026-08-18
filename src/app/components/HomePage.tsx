@@ -427,7 +427,7 @@ export function HomePage() {
               </BannerCarousel>
             </div>
 
-            {/* AI助手和对账单 — 圆形/方形自定义图标等比居中，不拉伸裁切 */}
+            {/* AI助手和对账单 — 图标放在正方形槽里铺满，避免非正方形容器裁切圆形 */}
             <div className="grid grid-cols-2 gap-3">
               <button 
                 type="button"
@@ -435,11 +435,13 @@ export function HomePage() {
                 disabled={aiOpening}
                 className="bg-white rounded-2xl p-4 flex flex-col items-center justify-center gap-2 active:scale-95 transition-transform shadow-lg aspect-square min-h-0 disabled:opacity-70"
               >
-                <div className="flex-1 min-h-0 w-full flex items-center justify-center p-2">
+                <div className="flex-1 min-h-0 w-full flex items-center justify-center">
                   {aiOpening ? (
                     <Loader2 className="w-10 h-10 text-emerald-600 animate-spin" />
                   ) : config.homeIcons?.aiAssistantIconUrl ? (
-                    <CmsMediaImg src={config.homeIcons.aiAssistantIconUrl} alt={config.homeIcons?.aiAssistantLabel || t.home.aiAssistant} className="max-h-full max-w-full object-contain" />
+                    <div className="aspect-square h-full max-w-full">
+                      <CmsMediaImg src={config.homeIcons.aiAssistantIconUrl} alt={config.homeIcons?.aiAssistantLabel || t.home.aiAssistant} className="h-full w-full object-cover" />
+                    </div>
                   ) : (
                     <Bot className="w-12 h-12 sm:w-14 sm:h-14 text-emerald-600 flex-shrink-0" />
                   )}
@@ -452,11 +454,13 @@ export function HomePage() {
                 disabled={statementOpening}
                 className="bg-white rounded-2xl p-4 flex flex-col items-center justify-center gap-2 active:scale-95 transition-transform shadow-lg aspect-square min-h-0 disabled:opacity-70"
               >
-                <div className="flex-1 min-h-0 w-full flex items-center justify-center p-2">
+                <div className="flex-1 min-h-0 w-full flex items-center justify-center">
                   {statementOpening ? (
                     <Loader2 className="w-10 h-10 text-emerald-600 animate-spin" />
                   ) : config.homeIcons?.statementIconUrl ? (
-                    <CmsMediaImg src={config.homeIcons.statementIconUrl} alt={config.homeIcons?.statementLabel || t.home.statement} className="max-h-full max-w-full object-contain" />
+                    <div className="aspect-square h-full max-w-full">
+                      <CmsMediaImg src={config.homeIcons.statementIconUrl} alt={config.homeIcons?.statementLabel || t.home.statement} className="h-full w-full object-cover" />
+                    </div>
                   ) : (
                     <Calculator className="w-12 h-12 sm:w-14 sm:h-14 text-emerald-600 flex-shrink-0" />
                   )}

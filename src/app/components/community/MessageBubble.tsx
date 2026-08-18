@@ -4,9 +4,6 @@ import { type ChatMessage } from "../../services/ChatProxyService";
 import { useLanguage } from "../../hooks/useLanguage";
 import { isDeletedSenderId } from "../../utils/accountDeletion";
 
-// 避免触摸后 click 再次触发导致 TTS 重复播放
-const lastTouchTs = { current: 0 };
-
 interface MessageBubbleProps {
   msg: ChatMessage;
   currentUserId: string;
@@ -40,11 +37,15 @@ export const MessageBubble = React.memo(({
       {showDeletedSender && (
         <p className="text-[10px] text-gray-400 mb-0.5 px-1">{deletedLabel}</p>
       )}
-      <div className={`rounded-2xl px-3 py-2 ${
-        isSent
-          ? `bg-emerald-500 text-white ${isRTL ? 'rounded-bl-md' : 'rounded-br-md'}`
-          : `bg-gray-100 text-gray-700 ${isRTL ? 'rounded-br-md' : 'rounded-bl-md'}`
-      }`}>
+      <div
+        className={`rounded-2xl px-3 py-2 ${
+          isSent
+            ? `bg-emerald-500 text-white ${isRTL ? 'rounded-bl-md' : 'rounded-br-md'}`
+            : `bg-gray-100 text-gray-700 ${isRTL ? 'rounded-br-md' : 'rounded-bl-md'}${msg.type === 'text' ? ' cursor-pointer active:opacity-70' : ''}`
+        }`}
+        role={!isSent && msg.type === 'text' ? 'button' : undefined}
+        onClick={!isSent && msg.type === 'text' ? () => onTextClick(msg.content) : undefined}
+      >
         {msg.type === "voice" && (
           <button
             className="flex items-center gap-2 min-w-[80px] w-full"
@@ -73,20 +74,8 @@ export const MessageBubble = React.memo(({
         )}
         {msg.type === "text" && (
           <p
-            className={`break-words leading-relaxed ${!isSent ? 'cursor-pointer active:opacity-70 select-none touch-manipulation' : ''}`}
+            className="break-words leading-relaxed select-none"
             style={{ fontSize: 'clamp(13px, 3.5vw, 15px)' }}
-            {...(!isSent && {
-              onClick: () => {
-                if (Date.now() - lastTouchTs.current < 400) return;
-                onTextClick(msg.content);
-              },
-              onPointerUp: (e: React.PointerEvent) => {
-                if (e.pointerType === 'touch') {
-                  lastTouchTs.current = Date.now();
-                  onTextClick(msg.content);
-                }
-              },
-            })}
           >
             {msg.content}
           </p>

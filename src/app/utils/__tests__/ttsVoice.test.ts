@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   pickBestVoice,
   resolveVoiceForLang,
+  resolveVoiceForLangOrDefault,
   scoreVoice,
   type VoiceLike,
 } from '../ttsVoice';
@@ -29,6 +30,11 @@ describe('scoreVoice', () => {
     const premium = scoreVoice(voice('Google US English Neural', 'en-US'), 'en-US');
     const basic = scoreVoice(voice('Fred', 'en-US'), 'en-US');
     expect(premium).toBeGreaterThan(basic);
+  });
+
+  it('returns -1 for empty voice or target lang', () => {
+    expect(scoreVoice(voice('Daniel', ''), 'en-US')).toBe(-1);
+    expect(scoreVoice(voice('Daniel', 'en-US'), '')).toBe(-1);
   });
 
   it('penalizes compact/robot voice names', () => {
@@ -78,5 +84,26 @@ describe('resolveVoiceForLang', () => {
     ];
     const resolved = resolveVoiceForLang(voices, ['en-US']);
     expect(resolved?.voiceIndex).toBe(1);
+  });
+});
+
+describe('resolveVoiceForLangOrDefault', () => {
+  it('returns the language match when one exists', () => {
+    const voices = [voice('Daniel', 'en-US'), voice('Monica', 'es-ES')];
+    const resolved = resolveVoiceForLangOrDefault(voices, ['es-BO', 'es-ES', 'es']);
+    expect(resolved?.voice.name).toBe('Monica');
+    expect(resolved?.lang).toBe('es-BO');
+  });
+
+  it('falls back to the first listed voice when no language matches', () => {
+    const voices = [voice('Daniel', 'en-US')];
+    const resolved = resolveVoiceForLangOrDefault(voices, ['zh-CN', 'zh']);
+    expect(resolved?.voice.name).toBe('Daniel');
+    expect(resolved?.voiceIndex).toBe(0);
+    expect(resolved?.lang).toBe('zh-CN');
+  });
+
+  it('returns null when the device has no voices', () => {
+    expect(resolveVoiceForLangOrDefault([], ['es-ES'])).toBeNull();
   });
 });
