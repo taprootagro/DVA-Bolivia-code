@@ -6,8 +6,23 @@ const OAUTH_CALLBACK_PATH = '/auth/callback';
 const OAUTH_CALLBACK_HOST = 'auth';
 const OAUTH_CALLBACK_SCHEME_PATH = '/callback';
 
+/**
+ * 包名 → OAuth scheme。RFC 3986 的 scheme 只允许 ALPHA / DIGIT / "+" / "-" / "."，
+ * 但安卓包名允许下划线（com.dva_agro.bolivia）：带下划线的 URI 会被 Chrome 判为非法而不唤起 App，
+ * 也过不了 Supabase 的 Redirect URL 校验（回退 Site URL，浏览器打开 PWA 首页）。
+ */
+export function oauthSchemeFromAppId(appId: string): string {
+  return appId
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9+.-]/g, '-')
+    .replace(/^[^a-z]+/, '');
+}
+
 function schemeRedirect(appId: string): string {
-  return `${appId}://${OAUTH_CALLBACK_HOST}${OAUTH_CALLBACK_SCHEME_PATH}`;
+  const scheme = oauthSchemeFromAppId(appId);
+  if (!scheme) return '';
+  return `${scheme}://${OAUTH_CALLBACK_HOST}${OAUTH_CALLBACK_SCHEME_PATH}`;
 }
 
 /** Capacitor 运行时 getConfig().appId 经常为空，需同时读 Config / 构建期注入。 */

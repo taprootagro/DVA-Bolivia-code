@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   nativeOAuthRedirectTo,
   oauthCallbackRouteFromUrl,
+  oauthSchemeFromAppId,
   readNativeAppId,
 } from '../../hooks/useNativeOAuthCallback';
 
@@ -50,13 +51,29 @@ describe('nativeOAuthRedirectTo', () => {
     delete (window as any).Capacitor;
   });
 
-  it('uses Capacitor.Config.appId on native', () => {
+  it('uses Capacitor.Config.appId on native, with underscores replaced', () => {
     (window as any).Capacitor = {
       isNativePlatform: () => true,
       getPlatform: () => 'android',
       Config: { appId: 'com.dva_agro.bolivia' },
     };
-    expect(nativeOAuthRedirectTo()).toBe('com.dva_agro.bolivia://auth/callback');
+    expect(nativeOAuthRedirectTo()).toBe('com.dva-agro.bolivia://auth/callback');
     delete (window as any).Capacitor;
+  });
+});
+
+describe('oauthSchemeFromAppId', () => {
+  it('keeps RFC 3986 scheme characters as-is', () => {
+    expect(oauthSchemeFromAppId('com.dva-agro.bolivia')).toBe('com.dva-agro.bolivia');
+  });
+
+  it('replaces characters that are illegal in a URI scheme', () => {
+    expect(oauthSchemeFromAppId('com.dva_agro.bolivia')).toBe('com.dva-agro.bolivia');
+    expect(oauthSchemeFromAppId('Com.DVA_Agro.Bolivia')).toBe('com.dva-agro.bolivia');
+  });
+
+  it('requires a leading letter', () => {
+    expect(oauthSchemeFromAppId('_1com.app')).toBe('com.app');
+    expect(oauthSchemeFromAppId('___')).toBe('');
   });
 });
