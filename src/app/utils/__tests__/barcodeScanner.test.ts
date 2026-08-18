@@ -41,8 +41,8 @@ describe("barcodeScanner", () => {
     document.body.classList.remove("qr-scanner-active");
   });
 
-  it("returns null on web", async () => {
-    expect(await barcodeScanner.scan()).toBeNull();
+  it("returns unavailable on web", async () => {
+    expect(await barcodeScanner.scan()).toEqual({ status: "unavailable" });
   });
 
   it("hides WebView background before startScan and restores after", async () => {
@@ -55,14 +55,51 @@ describe("barcodeScanner", () => {
       plugin.startScan.mock.invocationCallOrder[0],
     );
     expect(plugin.showBackground).toHaveBeenCalled();
-    expect(result).toEqual({ content: "https://example.com", format: "QR_CODE" });
+    expect(result).toEqual({
+      status: "content",
+      content: "https://example.com",
+      format: "QR_CODE",
+    });
     expect(document.documentElement.classList.contains("qr-scanner-active")).toBe(false);
+  });
+
+  it("returns denied without hideBackground when permission is rejected", async () => {
+    const plugin = nativePlugin({
+      checkPermission: vi.fn(async () => ({ granted: false })),
+    });
+    const result = await barcodeScanner.scan();
+    expect(result).toEqual({ status: "denied" });
+    expect(plugin.hideBackground).not.toHaveBeenCalled();
+    expect(plugin.startScan).not.toHaveBeenCalled();
+  });
+
+  it("calls onPreviewReady after hideBackground and before startScan", async () => {
+    const order: string[] = [];
+    const plugin = nativePlugin({
+      hideBackground: vi.fn(async () => {
+        order.push("hideBackground");
+      }),
+      startScan: vi.fn(async () => {
+        order.push("startScan");
+        return { hasContent: false };
+      }),
+    });
+
+    await barcodeScanner.scan({
+      onPreviewReady: () => {
+        order.push("onPreviewReady");
+      },
+    });
+
+    expect(order).toEqual(["hideBackground", "onPreviewReady", "startScan"]);
+    expect(plugin.hideBackground).toHaveBeenCalled();
+    expect(plugin.startScan).toHaveBeenCalled();
   });
 
   it("skips startScan when hideBackground is missing so the UI can fall back", async () => {
     const plugin = nativePlugin({ hideBackground: undefined });
     const result = await barcodeScanner.scan();
-    expect(result).toBeNull();
+    expect(result).toEqual({ status: "unavailable" });
     expect(plugin.startScan).not.toHaveBeenCalled();
   });
 

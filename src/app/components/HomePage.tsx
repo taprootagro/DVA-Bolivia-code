@@ -1,7 +1,7 @@
 import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, lazy, Suspense, startTransition } from "react";
 import { useNavigate } from "react-router";
 import { HomePageSecondaryLazySkeleton } from "./SkeletonScreen";
-import { Search, ScanLine, Bot, Calculator, X } from "lucide-react";
+import { Search, ScanLine, Bot, Calculator, X, Loader2 } from "lucide-react";
 import { ensureEdgeSessionReadyDetailed, isUserLoggedIn, isServerAssignedId } from "../utils/auth";
 import { cloudAIUsesBackend } from "../services/CloudAIService";
 import { BannerCarousel } from "./BannerCarousel";
@@ -44,6 +44,9 @@ export function HomePage() {
   const networkQuality = useNetworkQuality();
   const [showQRScanner, setShowQRScanner] = useState(false);
   const [scanResult, setScanResult] = useState<string | null>(null);
+  const [aiOpening, setAiOpening] = useState(false);
+  const [statementOpening, setStatementOpening] = useState(false);
+  const [videoOpening, setVideoOpening] = useState(false);
 
   // 搜索状态
   const [searchQuery, setSearchQuery] = useState("");
@@ -115,47 +118,62 @@ export function HomePage() {
 
   /** 无网络或 chunk 拉取失败：不跳转、无任何提示（保持首页）。未登录时跳转登录页（除非管理员开启免登录 AI）。 */
   const openAiAssistant = useCallback(async () => {
+    if (aiOpening) return;
     if (typeof navigator !== "undefined" && !navigator.onLine) return;
     const allowGuestAi = config.cloudAIConfig?.allowUnauthenticatedUse === true;
     if (!allowGuestAi && !isUserLoggedIn()) {
       navigate("/login", { state: { from: "aiAssistant" } });
       return;
     }
-    if (
-      !allowGuestAi &&
-      isUserLoggedIn() &&
-      isServerAssignedId() &&
-      cloudAIUsesBackend()
-    ) {
-      await ensureEdgeSessionReadyDetailed();
-    }
+    setAiOpening(true);
     try {
+      if (
+        !allowGuestAi &&
+        isUserLoggedIn() &&
+        isServerAssignedId() &&
+        cloudAIUsesBackend()
+      ) {
+        await Promise.race([
+          ensureEdgeSessionReadyDetailed(),
+          new Promise<void>((resolve) => setTimeout(resolve, 6000)),
+        ]);
+      }
       await import("./AIAssistantPage");
       navigateTo({ type: "aiAssistant" });
     } catch {
       /* silent */
+    } finally {
+      setAiOpening(false);
     }
-  }, [config.cloudAIConfig?.allowUnauthenticatedUse, navigate, navigateTo]);
+  }, [aiOpening, config.cloudAIConfig?.allowUnauthenticatedUse, navigate, navigateTo]);
 
   const openStatement = useCallback(async () => {
+    if (statementOpening) return;
     if (typeof navigator !== "undefined" && !navigator.onLine) return;
+    setStatementOpening(true);
     try {
       await import("./StatementPage");
       navigateTo({ type: "statement" });
     } catch {
       /* silent */
+    } finally {
+      setStatementOpening(false);
     }
-  }, [navigateTo]);
+  }, [navigateTo, statementOpening]);
 
   const openVideoFeed = useCallback(async () => {
+    if (videoOpening) return;
     if (typeof navigator !== "undefined" && !navigator.onLine) return;
+    setVideoOpening(true);
     try {
       await import("./VideoFeedPage");
       navigateTo({ type: "videoFeed" });
     } catch {
       /* silent */
+    } finally {
+      setVideoOpening(false);
     }
-  }, [navigateTo]);
+  }, [navigateTo, videoOpening]);
 
   // 关闭二级页后恢复 Layout 外层滚动位置（home 主体曾 display:none 会导致 scrollTop 被重置）
   useLayoutEffect(() => {
@@ -409,16 +427,19 @@ export function HomePage() {
               </BannerCarousel>
             </div>
 
-            {/* AI助手和对账单 — 自定义图标拉伸铺满图标区 */}
+            {/* AI助手和对账单 — 圆形/方形自定义图标等比居中，不拉伸裁切 */}
             <div className="grid grid-cols-2 gap-3">
               <button 
                 type="button"
                 onClick={() => void openAiAssistant()}
-                className="bg-white rounded-2xl p-4 flex flex-col items-center justify-center gap-2 active:scale-95 transition-transform shadow-lg aspect-square min-h-0"
+                disabled={aiOpening}
+                className="bg-white rounded-2xl p-4 flex flex-col items-center justify-center gap-2 active:scale-95 transition-transform shadow-lg aspect-square min-h-0 disabled:opacity-70"
               >
-                <div className="flex-1 min-h-0 w-full flex items-center justify-center overflow-hidden">
-                  {config.homeIcons?.aiAssistantIconUrl ? (
-                    <CmsMediaImg src={config.homeIcons.aiAssistantIconUrl} alt={config.homeIcons?.aiAssistantLabel || t.home.aiAssistant} className="h-full w-full object-fill" />
+                <div className="flex-1 min-h-0 w-full flex items-center justify-center p-2">
+                  {aiOpening ? (
+                    <Loader2 className="w-10 h-10 text-emerald-600 animate-spin" />
+                  ) : config.homeIcons?.aiAssistantIconUrl ? (
+                    <CmsMediaImg src={config.homeIcons.aiAssistantIconUrl} alt={config.homeIcons?.aiAssistantLabel || t.home.aiAssistant} className="max-h-full max-w-full object-contain" />
                   ) : (
                     <Bot className="w-12 h-12 sm:w-14 sm:h-14 text-emerald-600 flex-shrink-0" />
                   )}
@@ -428,11 +449,14 @@ export function HomePage() {
               <button 
                 type="button"
                 onClick={() => void openStatement()}
-                className="bg-white rounded-2xl p-4 flex flex-col items-center justify-center gap-2 active:scale-95 transition-transform shadow-lg aspect-square min-h-0"
+                disabled={statementOpening}
+                className="bg-white rounded-2xl p-4 flex flex-col items-center justify-center gap-2 active:scale-95 transition-transform shadow-lg aspect-square min-h-0 disabled:opacity-70"
               >
-                <div className="flex-1 min-h-0 w-full flex items-center justify-center overflow-hidden">
-                  {config.homeIcons?.statementIconUrl ? (
-                    <CmsMediaImg src={config.homeIcons.statementIconUrl} alt={config.homeIcons?.statementLabel || t.home.statement} className="h-full w-full object-fill" />
+                <div className="flex-1 min-h-0 w-full flex items-center justify-center p-2">
+                  {statementOpening ? (
+                    <Loader2 className="w-10 h-10 text-emerald-600 animate-spin" />
+                  ) : config.homeIcons?.statementIconUrl ? (
+                    <CmsMediaImg src={config.homeIcons.statementIconUrl} alt={config.homeIcons?.statementLabel || t.home.statement} className="max-h-full max-w-full object-contain" />
                   ) : (
                     <Calculator className="w-12 h-12 sm:w-14 sm:h-14 text-emerald-600 flex-shrink-0" />
                   )}
@@ -445,8 +469,14 @@ export function HomePage() {
             <button 
               type="button"
               onClick={() => void openVideoFeed()}
-              className="w-full aspect-[2/1] rounded-2xl overflow-hidden relative active:scale-95 transition-transform shadow-lg bg-gray-100"
+              disabled={videoOpening}
+              className="w-full aspect-[2/1] rounded-2xl overflow-hidden relative active:scale-95 transition-transform shadow-lg bg-gray-100 disabled:opacity-70"
             >
+              {videoOpening && (
+                <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/30">
+                  <Loader2 className="w-10 h-10 text-white animate-spin" />
+                </div>
+              )}
               <img
                 src={liveThumbnailUrl}
                 alt={config.homeIcons?.liveTitle || config.liveStreams?.[0]?.title || t.home.agriVideos}

@@ -369,7 +369,7 @@ export function ProfilePage() {
               <img
                 src={headerAvatar}
                 alt=""
-                className="absolute inset-0 h-full w-full object-cover object-center"
+                className="absolute inset-0 h-full w-full object-contain object-center"
                 decoding="async"
               />
             ) : (

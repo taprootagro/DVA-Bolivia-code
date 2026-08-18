@@ -21,6 +21,18 @@ export function resolvePushNavigationPath(
 }
 
 /**
+ * 只有确实启用 FCM 才允许调原生 register()。
+ * 未配 google-services.json 时 @capacitor/push-notifications 会取未初始化的 FirebaseApp 抛异常，
+ * Capacitor Bridge 对插件异常一律 `throw new RuntimeException(ex)`（Bridge.java callPluginMethod），
+ * 在原生线程上未捕获 → 整个 App 闪退，JS 侧 try/catch 拦不住，只能不调用。
+ */
+export function shouldRegisterFcm(
+  ppc?: HomePageConfig["pushProvidersConfig"] | null,
+): boolean {
+  return ppc?.activeProvider === "fcm" && !!ppc.fcm?.enabled;
+}
+
+/**
  * Capacitor 原生环境：注册 FCM token / JPush regId 并 POST 到 server /push/subscribe。
  * 根据 pushProvidersConfig.activeProvider 自动选择推送平台。
  * 登录后通过 storage / focus 重试；点击通知深链到社区等页面。
@@ -88,33 +100,35 @@ export function useNativePushRegistration() {
 
       const language = (storageGet("app-language") || "").trim() || undefined;
 
-      const result = await pushNotifications.register();
-      if (cancelled) return;
-      if (result?.token) {
-        const dedupeKey = `${uid}:${result.token}:${language || ""}`;
-        if (lastPostedKeyRef.current !== dedupeKey) {
-          try {
-            const res = await fetch(`${base}/push/subscribe`, {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${jwt}`,
-                apikey: anon,
-              },
-              body: JSON.stringify({
-                platform: "fcm",
-                token: result.token,
-                ...(language ? { language } : {}),
-              }),
-            });
-            if (res.ok) {
-              lastPostedKeyRef.current = dedupeKey;
-              console.log("[NativePush] FCM token registered with server");
-            } else {
-              console.warn("[NativePush] FCM register failed", await res.text());
+      if (shouldRegisterFcm(ppc)) {
+        const result = await pushNotifications.register();
+        if (cancelled) return;
+        if (result?.token) {
+          const dedupeKey = `${uid}:${result.token}:${language || ""}`;
+          if (lastPostedKeyRef.current !== dedupeKey) {
+            try {
+              const res = await fetch(`${base}/push/subscribe`, {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  Authorization: `Bearer ${jwt}`,
+                  apikey: anon,
+                },
+                body: JSON.stringify({
+                  platform: "fcm",
+                  token: result.token,
+                  ...(language ? { language } : {}),
+                }),
+              });
+              if (res.ok) {
+                lastPostedKeyRef.current = dedupeKey;
+                console.log("[NativePush] FCM token registered with server");
+              } else {
+                console.warn("[NativePush] FCM register failed", await res.text());
+              }
+            } catch (e) {
+              console.warn("[NativePush] FCM register error", e);
             }
-          } catch (e) {
-            console.warn("[NativePush] FCM register error", e);
           }
         }
       }

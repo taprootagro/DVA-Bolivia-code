@@ -655,7 +655,7 @@ export function VideoFeedPage({ onClose, startIndex = 0 }: VideoFeedPageProps) {
                         loop
                         playsInline
                         muted={isMuted}
-                        preload={isVisible ? "auto" : "none"}
+                        preload={isCurrent ? "auto" : "none"}
                         onClick={togglePlay}
                         onCanPlay={() => handleVideoCanPlay(index)}
                         onWaiting={() => handleVideoWaiting(index)}

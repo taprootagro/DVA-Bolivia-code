@@ -43,7 +43,13 @@ export const MerchantBindActionSheet = React.memo(function MerchantBindActionShe
   return (
     <>
       {showScanner && (
-        <Suspense fallback={null}>
+        <Suspense
+          fallback={
+            <div className="fixed inset-0 z-50 bg-black flex items-center justify-center">
+              <div className="w-10 h-10 border-3 border-white/30 border-t-white rounded-full animate-spin" />
+            </div>
+          }
+        >
           <LazyQRScannerCapture onScan={handleQRScanResult} onClose={() => setShowScanner(false)} />
         </Suspense>
       )}

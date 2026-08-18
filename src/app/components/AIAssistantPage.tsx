@@ -1,6 +1,6 @@
 import { SecondaryView } from "./SecondaryView";
 import { useLanguage, type Translations } from "../hooks/useLanguage";
-import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo, type RefObject } from "react";
 import { Camera, Loader, X, ScanLine, RefreshCw, AlertTriangle, FolderOpen, Play, Pause, Sparkles, Copy, Check, ChevronDown, ChevronUp, Send, Mic, PenLine, Image as ImageIcon, Volume2, VolumeX, MicOff } from "lucide-react";
 import { TaprootAgroDetector, Detection } from "../utils/taprootAgroDetector";
 import { useConfigContext } from "../hooks/ConfigProvider";
@@ -8,7 +8,7 @@ import { cloudAIService, cloudAIUsesBackend, CLOUD_AI_SESSION_EXPIRED, CLOUD_AI_
 import { getLocationForAI, isAppPermissionEnabled } from "../utils/appPermissions";
 import { cloudAIGuard } from "../utils/cloudAIGuard";
 import { useKeyboardHeight } from "../hooks/useKeyboardHeight";
-import { isNative, speechRecognition, textToSpeech, type WebSpeechHoldSession } from "../utils/capacitor-bridge";
+import { isNative, speechRecognition, textToSpeech, bridge, type WebSpeechHoldSession } from "../utils/capacitor-bridge";
 import { languageToSpeechTag, speechTagFallbacks, ttsRateForLanguage } from "../utils/speechLocale";
 import { storageGet, storageSet } from "../utils/safeStorage";
 import { useNavigate } from "react-router";
@@ -721,14 +721,40 @@ export function AIAssistantPage({ onClose }: AIAssistantPageProps) {
     }
   }, [image, cloudOnlyMode, sessionReady]);
 
-  // 系统相机拍照回调 — 复用 onFile 逻辑
+  // 系统相机拍照 — Native 优先走 bridge.camera，失败回退 file input
+  const applyPhotoDataUrl = useCallback((dataUrl: string) => {
+    setImage(dataUrl);
+    setResults([]);
+    setDone(false);
+  }, []);
+
+  const takePhotoViaNativeOrFile = useCallback(async (fileInputRef: RefObject<HTMLInputElement | null>) => {
+    if (isNative()) {
+      try {
+        const photo = await bridge.camera.takePhoto({
+          source: 'camera',
+          quality: 80,
+          width: 1920,
+        });
+        if (photo) {
+          const dataUrl = await bridge.camera.photoToDataUrl(photo);
+          if (dataUrl) {
+            applyPhotoDataUrl(dataUrl);
+            return;
+          }
+        }
+      } catch {
+        /* fall through to file input */
+      }
+    }
+    fileInputRef.current?.click();
+  }, [applyPhotoDataUrl]);
+
   const onCameraFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
     if (!f) return;
     try {
-      setImage(await readFileAsDataUrl(f));
-      setResults([]);
-      setDone(false);
+      applyPhotoDataUrl(await readFileAsDataUrl(f));
     } catch {
       /* ignore */
     }
@@ -1891,7 +1917,7 @@ export function AIAssistantPage({ onClose }: AIAssistantPageProps) {
             {showCamMenu && (
               <div className={`absolute bottom-full mb-2 bg-white rounded-2xl shadow-2xl py-2 z-20 w-40 overflow-hidden ${isRTL ? 'left-0' : 'right-0'}`}>
                 <button
-                  onClick={() => { setShowCamMenu(false); chatCameraRef.current?.click(); }}
+                  onClick={() => { setShowCamMenu(false); void takePhotoViaNativeOrFile(chatCameraRef); }}
                   className="w-full px-4 py-3 flex items-center gap-3 active:bg-gray-50 transition-colors"
                 >
                   <Camera className="w-4 h-4 text-emerald-600" />
@@ -2084,7 +2110,7 @@ export function AIAssistantPage({ onClose }: AIAssistantPageProps) {
 
                 <div className="w-full max-w-xs space-y-3">
                   <button
-                    onClick={() => cameraInputRef.current?.click()}
+                    onClick={() => void takePhotoViaNativeOrFile(cameraInputRef)}
                     className="w-full flex items-center justify-center gap-2 bg-emerald-600 text-white py-3.5 rounded-2xl active:scale-[0.97] transition-transform shadow-lg shadow-emerald-200/60"
                   >
                     <Camera className="w-5 h-5" /><span className="font-medium">{a.takePhoto}</span>

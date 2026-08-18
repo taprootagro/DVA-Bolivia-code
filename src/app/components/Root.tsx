@@ -55,10 +55,14 @@ export function Root() {
     void preloadVoices();
   }, []);
 
-  // 首帧绘制后再空闲预加载其余 Tab chunk，避免与 SW/首屏争抢
+  // 首帧绘制后再空闲预加载 chunk，避免与 SW/首屏争抢
   useEffect(() => {
     const raf = requestAnimationFrame(() => {
-      void import('../routes').then((m) => m.preloadMainPages());
+      if (isNative()) {
+        void import('../utils/appWarmup').then((m) => m.warmupAllChunks());
+      } else {
+        void import('../routes').then((m) => m.preloadMainPages());
+      }
     });
     return () => cancelAnimationFrame(raf);
   }, []);

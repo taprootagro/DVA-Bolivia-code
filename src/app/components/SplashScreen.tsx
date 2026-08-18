@@ -155,6 +155,7 @@ export function SplashScreen() {
     if (exiting) return;
     if (skipped || (minTimePassed && resourceReady)) {
       void import("./HomePage");
+      void import("./LoginPage");
       setExiting(true);
     }
   }, [minTimePassed, resourceReady, exiting, skipped]);
@@ -254,7 +255,7 @@ export function SplashScreen() {
                 <CmsMediaImg
                   src={config.appBranding.logoUrl}
                   alt="Logo"
-                  className="w-full h-full object-cover"
+                  className="w-full h-full object-contain p-2"
                 />
               ) : (
                 <span

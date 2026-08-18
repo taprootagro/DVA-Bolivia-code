@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, Children } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, Children } from "react";
 
 interface BannerCarouselProps {
   children: React.ReactNode;
@@ -29,6 +29,16 @@ export function BannerCarousel({
   const touchEndX = useRef(0);
   const slides = Children.toArray(children);
   const total = slides.length;
+
+  /** Fade 模式只挂载 current ±1，避免全部 banner 图同时进入视口触发并发下载 */
+  const fadeVisibleIndices = useMemo(() => {
+    if (total <= 1) return [0];
+    const indices = new Set<number>();
+    for (let d = -1; d <= 1; d++) {
+      indices.add(((current + d) % total + total) % total);
+    }
+    return Array.from(indices).sort((a, b) => a - b);
+  }, [current, total]);
 
   const goTo = useCallback(
     (index: number) => {
@@ -93,8 +103,8 @@ export function BannerCarousel({
     >
       {/* Slides */}
       {fade ? (
-        // Fade mode
-        slides.map((child, i) => (
+        // Fade mode — only mount current ±1 slides
+        fadeVisibleIndices.map((i) => (
           <div
             key={i}
             className="absolute inset-0 w-full h-full"
@@ -105,7 +115,7 @@ export function BannerCarousel({
               pointerEvents: i === current ? "auto" : "none",
             }}
           >
-            {child}
+            {slides[i]}
           </div>
         ))
       ) : (

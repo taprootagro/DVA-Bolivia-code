@@ -3069,7 +3069,7 @@ export default function ConfigManagerPage() {
               <p className="text-[11px] text-gray-400 mt-1">{ct("messages.recommend_square_png_svg_64_64px", "建议正方形 PNG/SVG，≥64×64px", "Recommend square PNG/SVG, ≥64×64px")}</p>
               {workingConfig.homeIcons?.aiAssistantIconUrl && (
                 <div className="flex items-center gap-3 pt-1">
-                  <CmsMediaImg src={workingConfig.homeIcons.aiAssistantIconUrl} alt="preview" className="w-10 h-10 rounded-lg border border-gray-200 object-fill" />
+                  <CmsMediaImg src={workingConfig.homeIcons.aiAssistantIconUrl} alt="preview" className="w-10 h-10 rounded-lg border border-gray-200 object-contain p-0.5" />
                   <span className="text-xs text-gray-500">{workingConfig.homeIcons?.aiAssistantLabel || ct("messages.ai_assistant", "AI 助手", "AI Assistant")}</span>
                 </div>
               )}
@@ -3112,7 +3112,7 @@ export default function ConfigManagerPage() {
               <p className="text-[11px] text-gray-400 mt-1">{ct("messages.recommend_square_png_svg_64_64px", "建议正方形 PNG/SVG，≥64×64px", "Recommend square PNG/SVG, ≥64×64px")}</p>
               {workingConfig.homeIcons?.statementIconUrl && (
                 <div className="flex items-center gap-3 pt-1">
-                  <CmsMediaImg src={workingConfig.homeIcons.statementIconUrl} alt="preview" className="w-10 h-10 rounded-lg border border-gray-200 object-fill" />
+                  <CmsMediaImg src={workingConfig.homeIcons.statementIconUrl} alt="preview" className="w-10 h-10 rounded-lg border border-gray-200 object-contain p-0.5" />
                   <span className="text-xs text-gray-500">{workingConfig.homeIcons?.statementLabel || ct("messages.statement", "对账单", "Statement")}</span>
                 </div>
               )}

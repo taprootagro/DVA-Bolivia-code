@@ -12,9 +12,16 @@
  * - 用完即释放，不在后台占用摄像头硬件
  */
 import { useRef, useState, useEffect, useCallback } from "react";
-import { X, Flashlight, FlashlightOff, Camera, ImageIcon } from "lucide-react";
-import { cameraManager } from "../utils/cameraManager";
+import { X, Flashlight, FlashlightOff, Camera, ImageIcon, CameraOff, Settings } from "lucide-react";
+import { cameraManager, CameraError } from "../utils/cameraManager";
 import { bridge, isNative } from "../utils/capacitor-bridge";
+import {
+  isAppPermissionEnabled,
+  setAppPermissionEnabled,
+  openSystemPermissionSettings,
+} from "../utils/appPermissions";
+
+const CAMERA_START_TIMEOUT_MS = 8000;
 
 // ── BarcodeDetector type ────────────────────────────────────────
 interface BarcodeDetectorResult {
@@ -56,6 +63,10 @@ export function QRScannerCapture({ onScan, onClose }: QRScannerCaptureProps) {
   const [cameraReady, setCameraReady] = useState(false);
   const [useWebCamera, setUseWebCamera] = useState(!isNative());
   const [nativeScanning, setNativeScanning] = useState(isNative());
+  const [previewReady, setPreviewReady] = useState(false);
+  const [permissionDenied, setPermissionDenied] = useState(false);
+  const [appCameraOff, setAppCameraOff] = useState(false);
+  const [scanAttempt, setScanAttempt] = useState(0);
 
   // 过渡动画
   const [animPhase, setAnimPhase] = useState<"entering" | "visible" | "leaving">("entering");
@@ -63,6 +74,27 @@ export function QRScannerCapture({ onScan, onClose }: QRScannerCaptureProps) {
     const raf = requestAnimationFrame(() => setAnimPhase("visible"));
     return () => cancelAnimationFrame(raf);
   }, []);
+
+  const resetForRetry = useCallback(() => {
+    scannedRef.current = false;
+    setPreviewReady(false);
+    setPermissionDenied(false);
+    setAppCameraOff(false);
+    setCameraFailed(false);
+    setCameraReady(false);
+    setNativeScanning(isNative());
+    setUseWebCamera(!isNative());
+    setScanAttempt((n) => n + 1);
+  }, []);
+
+  const handlePermissionRecovery = useCallback(async () => {
+    if (appCameraOff) {
+      setAppPermissionEnabled('camera', true);
+      resetForRetry();
+      return;
+    }
+    await openSystemPermissionSettings();
+  }, [appCameraOff, resetForRetry]);
 
   // ── BarcodeDetector ───────────────────────────────────────────
   const detectorRef = useRef<InstanceType<NonNullable<typeof window.BarcodeDetector>> | null>(null);
@@ -85,20 +117,39 @@ export function QRScannerCapture({ onScan, onClose }: QRScannerCaptureProps) {
     if (!isNative() || useWebCamera) return;
     let cancelled = false;
 
+    if (!isAppPermissionEnabled('camera')) {
+      setAppCameraOff(true);
+      setPermissionDenied(true);
+      setNativeScanning(false);
+      return;
+    }
+
     (async () => {
       try {
         setTorchSupported(true);
-        const result = await bridge.barcodeScanner.scan();
+        const result = await bridge.barcodeScanner.scan({
+          onPreviewReady: () => {
+            if (!cancelled) setPreviewReady(true);
+          },
+        });
         if (cancelled || scannedRef.current) return;
-        if (result?.content) {
+
+        if (result.status === 'content') {
           scannedRef.current = true;
           if (navigator.vibrate) navigator.vibrate(100);
           onScan(result.content);
           return;
         }
+
+        if (result.status === 'denied') {
+          setPermissionDenied(true);
+          setNativeScanning(false);
+          return;
+        }
       } catch {
         /* fall through to web camera */
       }
+
       if (!cancelled && !scannedRef.current) {
         setNativeScanning(false);
         setUseWebCamera(true);
@@ -109,7 +160,7 @@ export function QRScannerCapture({ onScan, onClose }: QRScannerCaptureProps) {
       cancelled = true;
       void bridge.barcodeScanner.stopScan();
     };
-  }, [onScan, useWebCamera]);
+  }, [onScan, useWebCamera, scanAttempt]);
 
   // ── Start camera (via global CameraManager) ──────────────────
   useEffect(() => {
@@ -127,6 +178,7 @@ export function QRScannerCapture({ onScan, onClose }: QRScannerCaptureProps) {
         }
 
         setTorchSupported(managed.torchSupported);
+        setPreviewReady(true);
 
         if (videoRef.current) {
           const video = videoRef.current;
@@ -142,19 +194,32 @@ export function QRScannerCapture({ onScan, onClose }: QRScannerCaptureProps) {
             /* loadedmetadata handler retries */
           });
         }
-      } catch {
-        setCameraFailed(true);
+      } catch (err) {
+        if (err instanceof CameraError && err.code === 'DENIED') {
+          setAppCameraOff(!isAppPermissionEnabled('camera'));
+          setPermissionDenied(true);
+        } else {
+          setCameraFailed(true);
+        }
       }
     })();
 
     return () => {
       cancelled = true;
       cancelAnimationFrame(rafRef.current);
-      // 用完即释放 — 立即停止摄像头，不保活
       if (videoRef.current) videoRef.current.srcObject = null;
       cameraManager.release();
     };
-  }, [useWebCamera]);
+  }, [useWebCamera, scanAttempt]);
+
+  // ── Web 相机启动超时兜底 ──────────────────────────────────────
+  useEffect(() => {
+    if (!useWebCamera || cameraReady || cameraFailed || permissionDenied) return;
+    const timer = window.setTimeout(() => {
+      if (!cameraReady) setCameraFailed(true);
+    }, CAMERA_START_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [useWebCamera, cameraReady, cameraFailed, permissionDenied, scanAttempt]);
 
   // ── Scan loop ─────────────────────────────────────────────────
   const scanFrame = useCallback(() => {
@@ -254,11 +319,12 @@ export function QRScannerCapture({ onScan, onClose }: QRScannerCaptureProps) {
   }, [onScan]);
 
   // ── Render ────────────────────────────────────────────────────
-  const nativePreview = nativeScanning && !useWebCamera;
+  const showNativeTransparent = previewReady && nativeScanning && !useWebCamera && !permissionDenied;
+  const showLoading = !permissionDenied && !cameraFailed && !previewReady && !cameraReady;
 
   return (
     <div
-      className={`qr-scanner-ui fixed inset-0 z-50 flex flex-col ${nativePreview ? "bg-transparent" : "bg-black"}`}
+      className={`qr-scanner-ui fixed inset-0 z-50 flex flex-col ${showNativeTransparent ? "bg-transparent" : "bg-black"}`}
       style={{
         transform: animPhase === "visible" ? "none" : "scale(0.96)",
         opacity: animPhase === "visible" ? 1 : 0,
@@ -277,7 +343,21 @@ export function QRScannerCapture({ onScan, onClose }: QRScannerCaptureProps) {
 
       {/* ═══════ 主内容区 ═══════ */}
       <div className="flex-1 relative flex items-center justify-center overflow-hidden">
-        {cameraFailed ? (
+        {permissionDenied ? (
+          <div className="flex flex-col items-center gap-6">
+            <div className="w-20 h-20 rounded-full bg-red-500/20 flex items-center justify-center">
+              <CameraOff className="w-10 h-10 text-red-400" />
+            </div>
+            <button
+              type="button"
+              onClick={() => void handlePermissionRecovery()}
+              className="w-14 h-14 rounded-full bg-white/15 flex items-center justify-center active:scale-90 transition-transform border border-white/20"
+              aria-label="Settings"
+            >
+              <Settings className="w-6 h-6 text-white" />
+            </button>
+          </div>
+        ) : cameraFailed ? (
           /* 相机不可用降级 — 纯图标，无文字 */
           <div className="flex flex-col items-center gap-6">
             <button
@@ -295,7 +375,7 @@ export function QRScannerCapture({ onScan, onClose }: QRScannerCaptureProps) {
           </div>
         ) : (
           <>
-            {/* Web 相机预览；原生扫码时预览在 WebView 后方，这里保持透明 */}
+            {/* Web 相机预览；原生扫码时 previewReady 后才透明 */}
             {useWebCamera && (
               <video
                 ref={videoRef}
@@ -338,8 +418,7 @@ export function QRScannerCapture({ onScan, onClose }: QRScannerCaptureProps) {
               </div>
             </div>
 
-            {/* Web 相机加载中；原生预览不转圈，否则会盖住相机 */}
-            {useWebCamera && !cameraReady && (
+            {showLoading && (
               <div className="absolute inset-0 flex items-center justify-center bg-black/60">
                 <div className="w-10 h-10 border-3 border-white/30 border-t-white rounded-full animate-spin" />
               </div>
@@ -354,7 +433,7 @@ export function QRScannerCapture({ onScan, onClose }: QRScannerCaptureProps) {
         style={{ paddingBottom: 'max(calc(env(safe-area-inset-bottom, 0px) + 16px), 24px)' }}
       >
         {/* 手电筒 */}
-        {!cameraFailed && (
+        {!cameraFailed && !permissionDenied && (
           <button
             onClick={toggleTorch}
             disabled={!torchSupported}

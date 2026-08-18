@@ -526,14 +526,14 @@ export function LoginPage() {
               <CmsMediaImg 
                 src={config.appBranding.logoUrl} 
                 alt="Logo"
-                className="w-full h-full object-cover"
+                className="w-full h-full object-contain p-1"
                 onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
               />
             ) : appIcon ? (
               <img 
                 src={appIcon} 
                 alt="Logo"
-                className="w-full h-full object-cover"
+                className="w-full h-full object-contain p-1"
                 onError={(e) => { (e.target as HTMLImageElement).replaceWith(Object.assign(document.createElement('span'), { className: 'text-emerald-600 font-bold', style: 'font-size:clamp(22px,8vw,36px)', textContent: '🌱' })); }}
               />
             ) : (

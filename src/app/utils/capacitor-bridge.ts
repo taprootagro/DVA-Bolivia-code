@@ -1511,6 +1511,13 @@ export const toast = {
 // 而 startScan() 会一直等到扫到码才 resolve。
 const QR_SCANNER_ACTIVE_CLASS = 'qr-scanner-active';
 
+export type ScanOutcome =
+  | { status: 'content'; content: string; format: string }
+  | { status: 'empty' }
+  | { status: 'denied' }
+  | { status: 'unavailable' }
+  | { status: 'failed' };
+
 function resolveBarcodeScanner(mod: any): any | null {
   return mod?.BarcodeScanner ?? mod?.default?.BarcodeScanner ?? null;
 }
@@ -1531,28 +1538,33 @@ async function restoreBarcodeScannerBackground(BarcodeScanner: any | null) {
 }
 
 export const barcodeScanner = {
-  async scan(): Promise<{ content: string; format: string } | null> {
-    if (!isNative()) return null; // Web 端无降级方案（需要第三方库）
+  async scan(opts?: { onPreviewReady?: () => void }): Promise<ScanOutcome> {
+    if (!isNative()) return { status: 'unavailable' };
 
     const mod = loadPlugin('@capacitor-community/barcode-scanner');
     const BarcodeScanner = resolveBarcodeScanner(mod);
-    if (!BarcodeScanner || typeof BarcodeScanner.startScan !== 'function') return null;
+    if (!BarcodeScanner || typeof BarcodeScanner.startScan !== 'function') {
+      return { status: 'unavailable' };
+    }
     // hideBackground 缺失时不要挂起 startScan：相机会在不透明 WebView 后空转
-    if (typeof BarcodeScanner.hideBackground !== 'function') return null;
+    if (typeof BarcodeScanner.hideBackground !== 'function') {
+      return { status: 'unavailable' };
+    }
 
     const status = await BarcodeScanner.checkPermission({ force: true });
-    if (!status.granted) return null;
+    if (!status.granted) return { status: 'denied' };
 
     setQrScannerChrome(true);
     try {
       await BarcodeScanner.hideBackground();
+      opts?.onPreviewReady?.();
       const result = await BarcodeScanner.startScan();
       if (result.hasContent) {
-        return { content: result.content!, format: result.format || 'unknown' };
+        return { content: result.content!, format: result.format || 'unknown', status: 'content' };
       }
-      return null;
+      return { status: 'empty' };
     } catch {
-      return null;
+      return { status: 'failed' };
     } finally {
       await restoreBarcodeScannerBackground(BarcodeScanner);
     }
