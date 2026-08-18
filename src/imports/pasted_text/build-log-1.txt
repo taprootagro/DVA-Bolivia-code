@@ -1,0 +1,81 @@
+2026-03-13 09:44:07	Initializing build environment...
+2026-03-13 09:44:20	Checking environment variables...
+2026-03-13 09:44:20	Going to install node with version v22.16.0
+2026-03-13 09:44:28	Install node v22.16.0 successfully.
+2026-03-13 09:44:28	Initialize build environment successfully.
+2026-03-13 09:44:28	Cloning Git repository...
+2026-03-13 09:44:28	Cloning repository: taprootagro/Taprootagroapp, branch: main, commitId: f002922d3a7ed7b2d9b1434f41696d6bcd7e3bc2
+2026-03-13 09:44:28	Cloning repository: https://github.com/taprootagro/Taprootagroapp
+2026-03-13 09:44:29	Repository cloned successfully.
+2026-03-13 09:44:29	Checked out to f002922d3a7ed7b2d9b1434f41696d6bcd7e3bc2.
+2026-03-13 09:44:29	Clone Git repository successfully.
+2026-03-13 09:44:29	Building application...
+2026-03-13 09:44:29	Using installCommand in esa.jsonc: npm install, instead of installCommand in console.
+2026-03-13 09:44:29	Starting installation: npm install...
+2026-03-13 09:44:45	Using buildCommand in esa.jsonc: npm run build, instead of buildCommand in console.
+2026-03-13 09:44:45	Starting build: npm run build
+2026-03-13 09:44:51	
+2026-03-13 09:44:51	> taprootagro-pwa@1.0.0 build
+2026-03-13 09:44:51	> vite build
+2026-03-13 09:44:51	
+2026-03-13 09:44:51	vite v6.3.5 building for production...
+2026-03-13 09:44:51	transforming...
+2026-03-13 09:44:51	✓ 1730 modules transformed.
+2026-03-13 09:44:51	rendering chunks...
+2026-03-13 09:44:51	computing gzip size...
+2026-03-13 09:44:51	dist/index.html                                   14.97 kB │ gzip:  5.40 kB
+2026-03-13 09:44:51	dist/assets/index-C2M7WqWw.css                   132.64 kB │ gzip: 21.23 kB
+2026-03-13 09:44:51	dist/assets/useKeyboardHeight-DtB9iqCy.js          0.59 kB │ gzip:  0.33 kB
+2026-03-13 09:44:51	dist/assets/auth-CD7AckZz.js                       0.79 kB │ gzip:  0.44 kB
+2026-03-13 09:44:51	dist/assets/ArticleDetailPage-BnoU6vrn.js          0.96 kB │ gzip:  0.58 kB
+2026-03-13 09:44:51	dist/assets/LazyImage-PlpEazci.js                  1.20 kB │ gzip:  0.68 kB
+2026-03-13 09:44:51	dist/assets/BannerDetailPage-BBDUEdwH.js           1.61 kB │ gzip:  0.75 kB
+2026-03-13 09:44:51	dist/assets/imageCompressor-CVvXFjvB.js            1.88 kB │ gzip:  0.75 kB
+2026-03-13 09:44:51	dist/assets/loader-x-eNmKwP.js                     1.96 kB │ gzip:  0.76 kB
+2026-03-13 09:44:51	dist/assets/ProductDetailPage-BJIw_Xm5.js          2.55 kB │ gzip:  0.91 kB
+2026-03-13 09:44:51	dist/assets/SecondaryView-z8kXJ6-7.js              2.91 kB │ gzip:  1.28 kB
+2026-03-13 09:44:51	dist/assets/OAuthCallback-7vg1skhI.js              3.49 kB │ gzip:  1.51 kB
+2026-03-13 09:44:51	dist/assets/CallDialog-CC1BADCq.js                 4.30 kB │ gzip:  1.80 kB
+2026-03-13 09:44:51	dist/assets/QRScannerCapture-Dmo2DWXc.js           8.07 kB │ gzip:  2.88 kB
+2026-03-13 09:44:51	dist/assets/MerchantBindActionSheet-CgZmjvnu.js    8.67 kB │ gzip:  2.46 kB
+2026-03-13 09:44:51	dist/assets/MarketPage-C8lh4iaf.js                 9.72 kB │ gzip:  3.45 kB
+2026-03-13 09:44:51	dist/assets/pt-D_OIUJ2J.js                        11.60 kB │ gzip:  4.92 kB
+2026-03-13 09:44:51	dist/assets/es-BA-WsXUB.js                        12.72 kB │ gzip:  5.30 kB
+2026-03-13 09:44:51	dist/assets/zh-TW-vPzzJSRW.js                     12.74 kB │ gzip:  6.37 kB
+2026-03-13 09:44:51	dist/assets/fr-D1xF-75A.js                        13.15 kB │ gzip:  5.38 kB
+2026-03-13 09:44:51	dist/assets/ProfilePage-DvVOyRo6.js               13.34 kB │ gzip:  4.17 kB
+2026-03-13 09:44:51	dist/assets/id-C93ktO4Q.js                        13.54 kB │ gzip:  5.70 kB
+2026-03-13 09:44:51	dist/assets/ms-BGY06idy.js                        13.64 kB │ gzip:  5.71 kB
+2026-03-13 09:44:51	dist/assets/tl-Dk9jMH_r.js                        14.53 kB │ gzip:  5.81 kB
+2026-03-13 09:44:51	dist/assets/tr-CY19v-fp.js                        14.55 kB │ gzip:  6.25 kB
+2026-03-13 09:44:51	dist/assets/zh-BAEdDKa5.js                        14.62 kB │ gzip:  7.34 kB
+2026-03-13 09:44:51	dist/assets/ar-B6oPYbTo.js                        15.87 kB │ gzip:  5.69 kB
+2026-03-13 09:44:51	dist/assets/vi-CwaOJUHE.js                        15.97 kB │ gzip:  6.30 kB
+2026-03-13 09:44:51	dist/assets/ja-BuG0Koiv.js                        15.98 kB │ gzip:  6.76 kB
+2026-03-13 09:44:51	dist/assets/VideoFeedPage-JDyIgfsa.js             16.49 kB │ gzip:  5.84 kB
+2026-03-13 09:44:51	dist/assets/ru-D8R3AxRa.js                        16.57 kB │ gzip:  5.95 kB
+2026-03-13 09:44:51	dist/assets/HomePage-To-6YmtB.js                  17.11 kB │ gzip:  5.30 kB
+2026-03-13 09:44:51	dist/assets/ProfileQRCard-O2Px2c0X.js             17.45 kB │ gzip:  6.53 kB
+2026-03-13 09:44:51	dist/assets/ur-DP8kHbAf.js                        18.56 kB │ gzip:  6.72 kB
+2026-03-13 09:44:51	dist/assets/StatementPage-CnFiNfqZ.js             18.60 kB │ gzip:  5.01 kB
+2026-03-13 09:44:51	dist/assets/fa-Bac5nsTI.js                        18.79 kB │ gzip:  6.69 kB
+2026-03-13 09:44:51	dist/assets/SettingsPage-BoAg8mLr.js              19.72 kB │ gzip:  5.64 kB
+2026-03-13 09:44:51	dist/assets/hi-CVMDij5B.js                        20.03 kB │ gzip:  5.74 kB
+2026-03-13 09:44:51	dist/assets/ui-vendor-BRY9_Qfk.js                 21.36 kB │ gzip:  7.08 kB
+2026-03-13 09:44:51	dist/assets/i18n-DEsCPBKR.js                      21.88 kB │ gzip:  9.11 kB
+2026-03-13 09:44:51	dist/assets/LoginPage-DvdKixPz.js                 23.32 kB │ gzip:  6.67 kB
+2026-03-13 09:44:51	dist/assets/th-Do1ouTnG.js                        24.18 kB │ gzip:  6.82 kB
+2026-03-13 09:44:51	dist/assets/bn-D-YKF31f.js                        25.59 kB │ gzip:  7.09 kB
+2026-03-13 09:44:51	dist/assets/my-Cje4cMcu.js                        27.36 kB │ gzip:  6.86 kB
+2026-03-13 09:44:51	dist/assets/CommunityPage-SFhYs9hL.js             49.83 kB │ gzip: 15.57 kB
+2026-03-13 09:44:51	dist/assets/index-Duq1sWVb.js                     53.56 kB │ gzip: 17.85 kB
+2026-03-13 09:44:51	dist/assets/AIAssistantPage-D2MQ1R_n.js           62.72 kB │ gzip: 18.03 kB
+2026-03-13 09:44:51	dist/assets/index-O66pw2R3.js                     95.18 kB │ gzip: 33.11 kB
+2026-03-13 09:44:51	dist/assets/ConfigManagerPage-CssWgMM3.js        134.27 kB │ gzip: 30.13 kB
+2026-03-13 09:44:51	dist/assets/react-vendor-56VL3qLW.js             226.82 kB │ gzip: 73.25 kB
+2026-03-13 09:44:51	✓ built in 5.78s
+2026-03-13 09:44:51	
+2026-03-13 09:44:51	Build command npm run build executed finished.
+2026-03-13 09:44:51	Assets directory not set, skipping...
+2026-03-13 09:44:51	Function file not found, skipping...
+2026-03-13 09:44:51	Failed to copy build artifacts: Both assets and function js file are not found, please configure the assets directory and function js file path in esa.jsonc or ESA console

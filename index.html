@@ -74,7 +74,9 @@
 
       function setAppHeight(){
         // standalone/fullscreen PWA：innerHeight 即完整屏幕
-        var isStandalone = window.matchMedia('(display-mode: standalone)').matches ||
+        var isCapNative = window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform();
+        var isStandalone = isCapNative ||
+                           window.matchMedia('(display-mode: standalone)').matches ||
                            window.matchMedia('(display-mode: fullscreen)').matches ||
                            (window.navigator).standalone === true;
 
