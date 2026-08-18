@@ -89,12 +89,6 @@ export function OAuthCallback() {
         return;
       }
 
-      const { data: existing } = await client.auth.getSession();
-      if (existing.session?.user && existing.session.access_token) {
-        await finalizeSession(existing.session);
-        return;
-      }
-
       const hasCode = !!(params.get("code") || hashParams.get("code"));
       const oauthState = params.get("state") || hashParams.get("state");
 

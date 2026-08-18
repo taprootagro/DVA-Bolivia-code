@@ -580,6 +580,8 @@ export async function mirrorAuthToDexie(): Promise<void> {
     }
     if (Object.keys(authData).length > 0) {
       await kvPutEncrypted('auth_mirror', JSON.stringify(authData));
+    } else {
+      await kvPutEncrypted('auth_mirror', '');
     }
   } catch (e) {
     console.warn('[TaprootDB] mirrorAuthToDexie failed:', e);

@@ -28,13 +28,14 @@ const SERVER_USER_ID_KEY = "agri_server_user_id";
 const AUTH_SOURCE_KEY = "agri_auth_source"; // "server" | "local"
 const ACCESS_TOKEN_KEY = "agri_access_token"; // JWT from Supabase Auth
 
-import { mirrorAuthToDexie, mirrorSupabaseSessionToDexie, getSupabaseSessionBackupFromDexie, SUPABASE_AUTH_STORAGE_KEY } from './db';
+import { mirrorAuthToDexie, mirrorSupabaseSessionToDexie, getSupabaseSessionBackupFromDexie, clearSupabaseSessionDexieBackup, SUPABASE_AUTH_STORAGE_KEY } from './db';
 import { storageGet, storageSet, storageRemove } from './safeStorage';
-import { getSupabaseBrowserClient } from './supabaseBrowser';
+import { getSupabaseBrowserClient, invalidateSupabaseBrowserClientCache } from './supabaseBrowser';
 import { clearLinkedGoogleCache } from './linkedGoogleCache';
 import { clearProfileEditCooldown } from './profileEditCooldown';
 import { clearCommunityRoleCache, clearStoreShellState } from './chatTabPersistence';
 import { clearEdgeProfileCache } from './edgeProfileCache';
+import { clearContentSuperAdminCache } from './contentSuperAdminCache';
 
 /** 登录状态写入 storage 后广播；Layout keep-alive 下页面不会卸载，需监听以刷新 UI */
 export const TAPROOT_AUTH_CHANGE_EVENT = "taproot-auth-change";
@@ -144,6 +145,8 @@ async function refreshSupabaseSession(): Promise<SessionFreshnessInput | null> {
  */
 export async function hydrateSessionFromBackup(): Promise<boolean> {
   if (storageGet(SUPABASE_AUTH_STORAGE_KEY)) return false;
+  // Explicit logout / guest: do not resurrect a Dexie session the user just signed out of.
+  if (storageGet(LOGIN_KEY) !== 'true') return false;
   const client = getSupabaseBrowserClient();
   if (!client) return false;
 
@@ -469,13 +472,47 @@ export function clearAuthData(): void {
   storageRemove(SERVER_USER_ID_KEY);
   storageRemove(AUTH_SOURCE_KEY);
   storageRemove(ACCESS_TOKEN_KEY);
+  storageRemove(SUPABASE_AUTH_STORAGE_KEY);
   clearLinkedGoogleCache();
   clearProfileEditCooldown();
   clearCommunityRoleCache();
   clearStoreShellState();
   clearEdgeProfileCache();
+  clearContentSuperAdminCache();
   // Mirror cleared state to Dexie
   mirrorAuthToDexie().catch(() => {});
+}
+
+/**
+ * Sign out and wipe local + Dexie session so the next login is not blocked by a
+ * resurrected refresh token (common in the Capacitor WebView after logout).
+ */
+export async function logoutUser(): Promise<void> {
+  const client = getSupabaseBrowserClient();
+  try {
+    await client?.auth.signOut({ scope: 'local' });
+  } catch {
+    /* ignore */
+  }
+  try {
+    await Promise.race([
+      Promise.resolve(client?.auth.signOut({ scope: 'global' })).then(() => undefined),
+      sleepMs(2500),
+    ]);
+  } catch {
+    /* ignore */
+  }
+  storageRemove(SUPABASE_AUTH_STORAGE_KEY);
+  await clearSupabaseSessionDexieBackup();
+  clearAuthData();
+  invalidateSupabaseBrowserClientCache();
+  dispatchTaprootAuthChanged();
+  try {
+    const { browser } = await import('./capacitor-bridge');
+    await browser.close();
+  } catch {
+    /* ignore */
+  }
 }
 
 /**

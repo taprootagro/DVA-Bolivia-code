@@ -14,6 +14,7 @@ vi.mock("../auth", async (importOriginal) => {
     isServerAssignedId: vi.fn(),
     ensureEdgeSessionReady: vi.fn(),
     clearAuthData: vi.fn(),
+    logoutUser: vi.fn().mockResolvedValue(undefined),
     TAPROOT_AUTH_CHANGE_EVENT: "taproot-auth-change",
   };
 });
@@ -50,7 +51,7 @@ vi.mock("../safeStorage", () => ({
 }));
 
 import { storageGetJSON } from "../safeStorage";
-import { isServerAssignedId, ensureEdgeSessionReady, clearAuthData } from "../auth";
+import { isServerAssignedId, ensureEdgeSessionReady, logoutUser } from "../auth";
 
 import { purgeAllChatLocalData } from "../../services/chatLocalStore";
 
@@ -90,7 +91,7 @@ describe("deleteAccount", () => {
     const result = await deleteAccount();
     expect(result).toEqual({ ok: true });
     expect(purgeAllChatLocalData).toHaveBeenCalled();
-    expect(clearAuthData).toHaveBeenCalled();
+    expect(logoutUser).toHaveBeenCalled();
     expect(fetchSpy).not.toHaveBeenCalled();
     fetchSpy.mockRestore();
   });
@@ -115,6 +116,6 @@ describe("clearLocalAccountData", () => {
   it("purges chat cache and clears auth", async () => {
     await clearLocalAccountData();
     expect(purgeAllChatLocalData).toHaveBeenCalled();
-    expect(clearAuthData).toHaveBeenCalled();
+    expect(logoutUser).toHaveBeenCalled();
   });
 });

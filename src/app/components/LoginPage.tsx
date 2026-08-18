@@ -463,6 +463,7 @@ export function LoginPage() {
           return;
         }
         if (data?.url) {
+          try { await bridge.browser.close(); } catch { /* ignore */ }
           await bridge.browser.open(data.url);
         } else {
           setErrorMsg(t.login.oauthError);

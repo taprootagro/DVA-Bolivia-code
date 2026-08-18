@@ -8,18 +8,9 @@ import { BackgroundSync } from "./BackgroundSync";
 import { useLanguage, languages, Language } from "../hooks/useLanguage";
 import { SecondaryView } from "./SecondaryView";
 import { useConfigContext } from "../hooks/ConfigProvider";
-import {
-  isUserLoggedIn,
-  setUserLoggedIn,
-  clearAccessToken,
-} from "../utils/auth";
-import { clearLinkedGoogleCache } from "../utils/linkedGoogleCache";
-import { clearProfileEditCooldown } from "../utils/profileEditCooldown";
+import { isUserLoggedIn, logoutUser } from "../utils/auth";
 import { PROFILE_GATE_DISMISSED_SESSION_KEY } from "../constants";
 import { armProfileGateSkipAutoOnce } from "../utils/profileGateSkip";
-import { clearContentSuperAdminCache } from "../utils/contentSuperAdminCache";
-import { clearEdgeProfileCache } from "../utils/edgeProfileCache";
-import { getSupabaseBrowserClient, invalidateSupabaseBrowserClientCache } from "../utils/supabaseBrowser";
 import { sanitizeRichHtml } from "../utils/sanitizeRichHtml";
 import { useContentSuperAdmin } from "../hooks/useContentSuperAdmin";
 
@@ -297,17 +288,10 @@ export function SettingsPage() {
                   void (async () => {
                     setShowLogoutConfirm(false);
                     try {
-                      await getSupabaseBrowserClient()?.auth.signOut();
+                      await logoutUser();
                     } catch {
                       /* ignore */
                     }
-                    clearContentSuperAdminCache();
-                    clearEdgeProfileCache();
-                    invalidateSupabaseBrowserClientCache();
-                    clearAccessToken();
-                    clearLinkedGoogleCache();
-                    clearProfileEditCooldown();
-                    setUserLoggedIn(false);
                     try {
                       sessionStorage.removeItem(PROFILE_GATE_DISMISSED_SESSION_KEY);
                     } catch {

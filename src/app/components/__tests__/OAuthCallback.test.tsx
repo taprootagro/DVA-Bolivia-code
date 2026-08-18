@@ -65,13 +65,12 @@ describe("OAuthCallback", () => {
     expect(mocks.exchangeCodeForSession).toHaveBeenCalledWith("flow-code-123");
   });
 
-  it("skips the exchange when a session already exists", async () => {
+  it("exchanges a new auth code even if a leftover session is still present", async () => {
     mocks.getSession.mockResolvedValue({ data: { session } });
     window.history.replaceState({}, "", "/auth/callback?code=flow-code-123");
 
     render(<OAuthCallback />);
 
-    await waitFor(() => expect(mocks.getSession).toHaveBeenCalled());
-    expect(mocks.exchangeCodeForSession).not.toHaveBeenCalled();
+    await waitFor(() => expect(mocks.exchangeCodeForSession).toHaveBeenCalledWith("flow-code-123"));
   });
 });

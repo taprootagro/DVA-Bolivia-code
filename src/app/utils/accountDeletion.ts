@@ -1,15 +1,12 @@
 import { CONFIG_STORAGE_KEY, PROFILE_GATE_DISMISSED_SESSION_KEY } from "../constants";
 import { purgeAllChatLocalData } from "../services/chatLocalStore";
 import {
-  clearAuthData,
   ensureEdgeSessionReady,
   isServerAssignedId,
+  logoutUser,
   TAPROOT_AUTH_CHANGE_EVENT,
 } from "./auth";
-import { clearContentSuperAdminCache } from "./contentSuperAdminCache";
-import { clearEdgeProfileCache } from "./edgeProfileCache";
 import { storageGetJSON, storageRemove } from "./safeStorage";
-import { getSupabaseBrowserClient, invalidateSupabaseBrowserClientCache } from "./supabaseBrowser";
 import { defaultConfig } from "/taprootagrosetting";
 import type { HomePageConfig } from "../hooks/useHomeConfig";
 import { deepMerge, MERGE_REPLACE } from "./index";
@@ -50,15 +47,7 @@ function getAccountDeleteEndpoint(): string | null {
 }
 
 export async function clearLocalAccountData(): Promise<void> {
-  try {
-    await getSupabaseBrowserClient()?.auth.signOut();
-  } catch {
-    /* ignore */
-  }
-  clearContentSuperAdminCache();
-  clearEdgeProfileCache();
-  invalidateSupabaseBrowserClientCache();
-  clearAuthData();
+  await logoutUser();
   await purgeAllChatLocalData();
   try {
     sessionStorage.removeItem(PROFILE_GATE_DISMISSED_SESSION_KEY);

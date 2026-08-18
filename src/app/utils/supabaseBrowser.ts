@@ -74,6 +74,14 @@ export function getSupabaseBrowserClient(): SupabaseClient | null {
       persistSession: true,
       storage: typeof window !== "undefined" ? supabaseCookieStorage : undefined,
       autoRefreshToken: true,
+      // Android WebView navigator.locks can deadlock after signOut; next login then hangs.
+      ...(typeof window !== "undefined" &&
+      typeof (window as any).Capacitor?.isNativePlatform === "function" &&
+      (window as any).Capacitor.isNativePlatform()
+        ? {
+            lock: async (_name: string, _acquireTimeout: number, fn: () => Promise<unknown>) => fn(),
+          }
+        : {}),
     },
     realtime: { params: { eventsPerSecond: 10 } },
   });

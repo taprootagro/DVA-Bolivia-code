@@ -5,18 +5,22 @@ import {
   getSessionAccessTokenForEdge,
   ensureEdgeSessionReady,
   ensureEdgeSessionReadyDetailed,
+  hydrateSessionFromBackup,
 } from "../auth";
 import { getSupabaseBrowserClient } from "../supabaseBrowser";
+import { getSupabaseSessionBackupFromDexie } from "../db";
 import { storageGet } from "../safeStorage";
 
 vi.mock("../supabaseBrowser", () => ({
   getSupabaseBrowserClient: vi.fn(),
+  invalidateSupabaseBrowserClientCache: vi.fn(),
 }));
 
 vi.mock("../db", () => ({
   mirrorAuthToDexie: vi.fn().mockResolvedValue(undefined),
   mirrorSupabaseSessionToDexie: vi.fn().mockResolvedValue(undefined),
   getSupabaseSessionBackupFromDexie: vi.fn().mockResolvedValue(null),
+  clearSupabaseSessionDexieBackup: vi.fn().mockResolvedValue(undefined),
   SUPABASE_AUTH_STORAGE_KEY: "taprootagro-auth",
 }));
 
@@ -201,5 +205,40 @@ describe("ensureEdgeSessionReady", () => {
     const token = await tokenPromise;
     expect(token).toBeNull();
     vi.useRealTimers();
+  });
+});
+
+describe("hydrateSessionFromBackup", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.clearAllMocks();
+    vi.mocked(getSupabaseSessionBackupFromDexie).mockResolvedValue(null);
+  });
+
+  it("does not resurrect a Dexie session after logout", async () => {
+    vi.mocked(getSupabaseSessionBackupFromDexie).mockResolvedValue(
+      JSON.stringify({ access_token: "a", refresh_token: "r" }),
+    );
+    const restored = await hydrateSessionFromBackup();
+    expect(restored).toBe(false);
+    expect(getSupabaseBrowserClient).not.toHaveBeenCalled();
+  });
+
+  it("restores from Dexie when the user is still marked logged in", async () => {
+    localStorage.setItem("isLoggedIn", "true");
+    vi.mocked(getSupabaseSessionBackupFromDexie).mockResolvedValue(
+      JSON.stringify({ access_token: "a", refresh_token: "r" }),
+    );
+    const setSession = vi.fn().mockResolvedValue({
+      data: { session: { access_token: "a", user: { id: "u1" } } },
+      error: null,
+    });
+    vi.mocked(getSupabaseBrowserClient).mockReturnValue({
+      auth: { setSession },
+    } as never);
+
+    const restored = await hydrateSessionFromBackup();
+    expect(restored).toBe(true);
+    expect(setSession).toHaveBeenCalled();
   });
 });
