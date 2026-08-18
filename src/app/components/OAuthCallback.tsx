@@ -130,7 +130,10 @@ export function OAuthCallback() {
       }
 
       if (hasCode) {
-        const ex = await client.auth.exchangeCodeForSession(window.location.href);
+        // exchangeCodeForSession 的入参是 auth_code 本身，不是整个回调 URL；
+        // 传 URL 会让 GoTrue 查不到 flow state（invalid flow state, no valid flow state found）。
+        const code = (params.get("code") || hashParams.get("code") || "").trim();
+        const ex = await client.auth.exchangeCodeForSession(code);
         if (ex.error) {
           const retry = await client.auth.getSession();
           if (retry.data.session?.user && retry.data.session.access_token) {
