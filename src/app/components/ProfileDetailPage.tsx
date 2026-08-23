@@ -20,6 +20,13 @@ import {
   recordProfileEditCooldownSave,
 } from "../utils/profileEditCooldown";
 import { compressImageFile, COMPRESS_PRESETS } from "../utils/imageCompressor";
+import {
+  defaultDialForLanguage,
+  formatStoredPhone,
+  isValidProfilePhoneParts,
+  matchDialFromInput,
+  parsePhoneParts,
+} from "../utils/phoneCountry";
 
 const AVATAR_CLIENT_MAX = 400_000;
 /** data: 头像超过此长度则不放进 POST body，避免 Edge/浏览器内存尖峰导致失败或闪退；文字资料仍同步 */
@@ -55,7 +62,7 @@ export function ProfileDetailPage({
   onRemoteProfileSaved,
   profileCompleted = false,
 }: ProfileDetailPageProps) {
-  const { t } = useLanguage();
+  const { t, language, isChinese } = useLanguage();
   const { config, saveConfig } = useConfigContext();
 
   const userId = getUserId();
@@ -67,14 +74,23 @@ export function ProfileDetailPage({
   const [avatar, setAvatar] = useState(
     isServer ? "" : config?.userProfile?.avatar || "",
   );
-  const [phone, setPhone] = useState(
-    (isServer ? "" : config?.userProfile?.phone || "").trim(),
-  );
   const [pickup, setPickup] = useState(
     (isServer ? "" : config?.userProfile?.pickupAddress || "").slice(
       0,
       PICKUP_MAX,
     ),
+  );
+  const [dialCode, setDialCode] = useState(
+    () => parsePhoneParts(
+      (isServer ? "" : config?.userProfile?.phone || "").trim(),
+      defaultDialForLanguage(language),
+    ).dial,
+  );
+  const [nationalNumber, setNationalNumber] = useState(
+    () => parsePhoneParts(
+      (isServer ? "" : config?.userProfile?.phone || "").trim(),
+      defaultDialForLanguage(language),
+    ).national,
   );
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
@@ -82,6 +98,12 @@ export function ProfileDetailPage({
   const [linkedGoogleEmail, setLinkedGoogleEmail] = useState<string>(() =>
     isServer ? (getLinkedGoogleCache() ?? "") : "",
   );
+
+  const applyStoredPhone = useCallback((raw: string) => {
+    const parts = parsePhoneParts(raw, defaultDialForLanguage(language));
+    setDialCode(parts.dial);
+    setNationalNumber(parts.national);
+  }, [language]);
 
   const avatarInputRef = useRef<HTMLInputElement>(null);
 
@@ -114,12 +136,12 @@ export function ProfileDetailPage({
       if (isServer) {
         setName(snap.displayName || "");
         setAvatar(snap.avatarUrl || "");
-        setPhone((snap.phone || "").trim());
+        applyStoredPhone(snap.phone || "");
         setPickup((snap.pickupAddress || "").slice(0, PICKUP_MAX));
       } else {
         setName(snap.displayName || config?.userProfile?.name || "");
         setAvatar(snap.avatarUrl || config?.userProfile?.avatar || "");
-        setPhone((snap.phone || config?.userProfile?.phone || "").trim());
+        applyStoredPhone(snap.phone || config?.userProfile?.phone || "");
         setPickup(
           (snap.pickupAddress || config?.userProfile?.pickupAddress || "").slice(
             0,
@@ -140,12 +162,12 @@ export function ProfileDetailPage({
           ? p.pickupAddress
           : "";
     if (isServer) {
-      setPhone((fromDbPhone || "").trim());
+      applyStoredPhone(fromDbPhone || "");
       setName(fromDbName || "");
       setAvatar(fromDbAvatar || "");
       setPickup((fromDbPickup || "").slice(0, PICKUP_MAX));
     } else {
-      setPhone((fromDbPhone || config?.userProfile?.phone || "").trim());
+      applyStoredPhone(fromDbPhone || config?.userProfile?.phone || "");
       setName(fromDbName || config?.userProfile?.name || "");
       setAvatar(fromDbAvatar || config?.userProfile?.avatar || "");
       setPickup(
@@ -163,6 +185,7 @@ export function ProfileDetailPage({
     config?.userProfile?.name,
     config?.userProfile?.avatar,
     config?.userProfile?.pickupAddress,
+    applyStoredPhone,
   ]);
 
   const showToast = useCallback((msg: string) => {
@@ -215,13 +238,18 @@ export function ProfileDetailPage({
       }
     }
 
+    if (!isValidProfilePhoneParts(dialCode, nationalNumber)) {
+      showToast(t.login.invalidPhone);
+      return;
+    }
+
     setSaving(true);
     try {
       const displayName =
         name.trim() ||
         (isServer ? "" : config?.userProfile?.name || "") ||
         t.profile.defaultDisplayNameFallback!;
-      const phoneTrim = phone.trim();
+      const phoneTrim = formatStoredPhone(dialCode, nationalNumber);
 
       const updated = {
         ...config,
@@ -347,7 +375,8 @@ export function ProfileDetailPage({
     avatar,
     config,
     name,
-    phone,
+    dialCode,
+    nationalNumber,
     saveConfig,
     showToast,
     t,
@@ -356,6 +385,8 @@ export function ProfileDetailPage({
     onRemoteProfileSaved,
     profileCompleted,
   ]);
+
+  const dialMatch = matchDialFromInput(dialCode);
 
   const handleCopyId = useCallback(() => {
     if (userId) {
@@ -450,16 +481,51 @@ export function ProfileDetailPage({
             <label className="text-xs font-medium text-gray-500 mb-1.5 block">
               {t.profile.phone!}
             </label>
-            <input
-              type="tel"
-              inputMode="tel"
-              autoComplete="tel"
-              placeholder={t.profile.phonePlaceholder}
-              value={phone}
-              onChange={(e) => setPhone(e.target.value)}
-              className="w-full bg-gray-50 rounded-xl px-4 py-3 text-sm text-gray-800 placeholder-gray-400 outline-none focus:ring-2 focus:ring-emerald-300 transition-shadow"
-              dir="ltr"
-            />
+            <div className="flex gap-2" dir="ltr">
+              <div className="w-[7.5rem] shrink-0 bg-gray-50 rounded-xl px-2 py-3 flex items-center gap-1 focus-within:ring-2 focus-within:ring-emerald-300 transition-shadow">
+                <span className="text-sm text-gray-400 select-none">+</span>
+                <input
+                  type="tel"
+                  inputMode="numeric"
+                  autoComplete="tel-country-code"
+                  value={dialCode}
+                  onChange={(e) => {
+                    const matched = matchDialFromInput(e.target.value);
+                    setDialCode(matched.dial);
+                  }}
+                  aria-label={
+                    t.profile.phoneCountryCode ||
+                    (isChinese ? "国家号段" : "Country code")
+                  }
+                  className="min-w-0 flex-1 bg-transparent text-sm text-gray-800 outline-none"
+                />
+                {dialMatch.iso ? (
+                  <span className="text-[10px] text-gray-400 shrink-0">
+                    {dialMatch.iso}
+                  </span>
+                ) : null}
+              </div>
+              <input
+                type="tel"
+                inputMode="numeric"
+                autoComplete="tel-national"
+                placeholder={
+                  t.profile.phoneNumberPlaceholder ||
+                  t.profile.phonePlaceholder ||
+                  "15012345678"
+                }
+                value={nationalNumber}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v.includes("+") || /^\s*00/.test(v)) {
+                    applyStoredPhone(v);
+                    return;
+                  }
+                  setNationalNumber(v.replace(/\D/g, "").slice(0, 15));
+                }}
+                className="flex-1 min-w-0 bg-gray-50 rounded-xl px-4 py-3 text-sm text-gray-800 placeholder-gray-400 outline-none focus:ring-2 focus:ring-emerald-300 transition-shadow"
+              />
+            </div>
             <p className="text-[10px] text-gray-400 mt-1 px-1">{t.profile.phoneHint!}</p>
           </div>
 

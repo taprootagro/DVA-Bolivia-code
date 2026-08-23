@@ -235,6 +235,17 @@ export function setUserLoggedIn(status: boolean): void {
   dispatchTaprootAuthChanged();
 }
 
+/**
+ * Full document navigation after login.
+ * Client-side `navigate("/home/profile")` keeps the previous JS graph; after a
+ * Cloudflare Pages deploy those hashed chunks 404 and version recovery wipes
+ * the app. A real navigation loads the new index.html + matching assets.
+ */
+export function enterAppAfterLogin(): void {
+  if (typeof window === "undefined") return;
+  window.location.replace("/home/profile");
+}
+
 // ---- Server-Assigned ID (Tier 1 — Production) ----
 
 /**

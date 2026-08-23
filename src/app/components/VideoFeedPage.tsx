@@ -18,6 +18,9 @@ interface VideoFeedPageProps {
 const EMBED_IFRAME_ALLOW =
   "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen";
 
+/** Leave YouTube/Vimeo chrome (seek bar) uncovered so users can scrub. */
+const EMBED_TIMELINE_INSET = "calc(5.5rem + env(safe-area-inset-bottom, 0px))";
+
 // 视频 URL 列表从配置 (config.videoFeed.videoSources) 读取，
 // 仅当配置无数据时使用空数组兜底，不再硬编码大量 Google Storage URL 在 JS bundle 中。
 const FALLBACK_VIDEO_URLS: string[] = [];
@@ -621,28 +624,31 @@ export function VideoFeedPage({ onClose, startIndex = 0 }: VideoFeedPageProps) {
                   {video.embedUrl ? (
                     isCurrent && (
                       <>
+                        {/* 中间手势层负责点按播放和上下滑；底部留空给播放器时间线。 */}
                         <iframe
                           ref={isCurrent ? embedIframeRef : undefined}
                           key={video.id}
                           src={buildEmbedPlaybackSrc(video.embedUrl, false)}
                           title={video.title}
-                          className={`video-feed-embed relative w-full h-full z-[1] border-0 ${isPlaying ? "pointer-events-auto" : "pointer-events-none"}`}
+                          className="video-feed-embed relative w-full h-full z-[1] border-0 pointer-events-auto"
                           allow={EMBED_IFRAME_ALLOW}
                           allowFullScreen
                           referrerPolicy="strict-origin-when-cross-origin"
                         />
-                        {!isPlaying && (
-                          <button
-                            type="button"
-                            className="absolute inset-0 flex items-center justify-center z-10"
-                            onClick={togglePlay}
-                            aria-label={v?.sampleVideo || "Play"}
-                          >
+                        <button
+                          type="button"
+                          data-timeline-hole={isPlaying ? "1" : "0"}
+                          className="absolute left-0 right-0 top-0 flex items-center justify-center z-10"
+                          style={{ bottom: isPlaying ? EMBED_TIMELINE_INSET : 0 }}
+                          onClick={togglePlay}
+                          aria-label={v?.sampleVideo || "Play"}
+                        >
+                          {!isPlaying && (
                             <div className="w-20 h-20 bg-black/50 rounded-full flex items-center justify-center pointer-events-none">
                               <Play className="w-10 h-10 text-white ms-1" fill="white" />
                             </div>
-                          </button>
-                        )}
+                          )}
+                        </button>
                       </>
                     )
                   ) : (
@@ -655,8 +661,15 @@ export function VideoFeedPage({ onClose, startIndex = 0 }: VideoFeedPageProps) {
                         loop
                         playsInline
                         muted={isMuted}
+                        controls={isPlaying}
                         preload={isCurrent ? "auto" : "none"}
                         onClick={togglePlay}
+                        onTouchStart={(e) => {
+                          if (!isPlaying) return;
+                          const rect = e.currentTarget.getBoundingClientRect();
+                          const y = e.targetTouches[0]?.clientY ?? 0;
+                          if (y >= rect.bottom - 88) e.stopPropagation();
+                        }}
                         onCanPlay={() => handleVideoCanPlay(index)}
                         onWaiting={() => handleVideoWaiting(index)}
                         onError={() => handleVideoError(index)}
@@ -692,7 +705,15 @@ export function VideoFeedPage({ onClose, startIndex = 0 }: VideoFeedPageProps) {
                   )}
 
                   {/* 视频信息和互动区域 */}
-                  <div className="absolute bottom-0 left-0 right-0 pb-4 px-4 pt-4 bg-gradient-to-t from-black/90 via-black/50 to-transparent z-10">
+                  <div
+                    className="absolute left-0 right-0 pb-4 px-4 pt-4 bg-gradient-to-t from-black/90 via-black/50 to-transparent z-10"
+                    style={{
+                      bottom:
+                        video.embedUrl && isCurrent && isPlaying
+                          ? EMBED_TIMELINE_INSET
+                          : 0,
+                    }}
+                  >
                     <div className="flex items-end gap-3">
                       {/* 左侧信息区 */}
                       <div className="flex-1 space-y-2 min-w-0">

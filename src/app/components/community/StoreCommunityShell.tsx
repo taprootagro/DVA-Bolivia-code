@@ -64,6 +64,11 @@ import {
 } from "../../utils/chatTabPersistence";
 import { setStoreChatUnreadCount } from "../../utils/storeChatUnread";
 import { toast } from "../../utils/capacitor-bridge";
+import {
+  prefetchMediaUrls,
+  recallStoreLists,
+  rememberStoreLists,
+} from "../../services/chatUiMemory";
 
 const LazyMerchantBindActionSheet = lazy(() =>
   import("./MerchantBindActionSheet").then((m) => ({
@@ -462,11 +467,16 @@ export function StoreCommunityShell({ storeUserId }: { storeUserId: string }) {
     [farmerFallback],
   );
 
+  const cachedLists = recallStoreLists(storeUserId);
   const [shell, setShell] = useState<ShellMode>("recents");
   const [activePeer, setActivePeer] = useState<StorePeerRecord | null>(null);
-  const [recentsRows, setRecentsRows] = useState<{ recent: StoreRecentRecord; peer?: StorePeerRecord }[]>([]);
-  const [peers, setPeers] = useState<StorePeerRecord[]>([]);
-  const [blockedPeerKeys, setBlockedPeerKeys] = useState<Set<string>>(() => new Set());
+  const [recentsRows, setRecentsRows] = useState<{ recent: StoreRecentRecord; peer?: StorePeerRecord }[]>(
+    () => cachedLists?.recentsRows ?? [],
+  );
+  const [peers, setPeers] = useState<StorePeerRecord[]>(() => cachedLists?.peers ?? []);
+  const [blockedPeerKeys, setBlockedPeerKeys] = useState<Set<string>>(
+    () => new Set(cachedLists?.blocked ?? []),
+  );
   const [menu, setMenu] = useState<
     | { kind: "recent"; peerKey: string; channelId: string; x: number; y: number }
     | { kind: "contact"; peer: StorePeerRecord; x: number; y: number }
@@ -491,6 +501,15 @@ export function StoreCommunityShell({ storeUserId }: { storeUserId: string }) {
     );
     setRecentsRows(rows);
     setPeers(plist);
+    rememberStoreLists(storeUserId, {
+      recentsRows: rows,
+      peers: plist,
+      blocked: blockedList,
+    });
+    prefetchMediaUrls([
+      ...plist.map((p) => p.avatar),
+      ...rows.map((r) => r.peer?.avatar),
+    ]);
   }, [storeUserId]);
 
   /** 恢复上次一对一线程完成后再持久化，避免首帧 recents 覆盖已保存的 thread */

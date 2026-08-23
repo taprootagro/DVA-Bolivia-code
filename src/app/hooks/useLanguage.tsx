@@ -251,6 +251,10 @@ export interface Translations {
     farmerQrHint?: string;
     phone?: string;
     phonePlaceholder?: string;
+    /** 国家号段选择框无障碍名称 */
+    phoneCountryCode?: string;
+    /** 不含国家号段的本地号码占位 */
+    phoneNumberPlaceholder?: string;
     phoneHint?: string;
     addPhoneHint?: string;
     completeProfileFirst?: string;

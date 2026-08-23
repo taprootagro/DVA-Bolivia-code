@@ -2,9 +2,8 @@ import { useEffect, useState, startTransition } from "react";
 import { useNavigate } from "react-router";
 import type { Session } from "@supabase/supabase-js";
 import { Loader2, AlertTriangle, CheckCircle } from "lucide-react";
-import { setUserLoggedIn, setServerUserId, setAccessToken } from "../utils/auth";
+import { setUserLoggedIn, setServerUserId, setAccessToken, enterAppAfterLogin } from "../utils/auth";
 import { useLanguage } from "../hooks/useLanguage";
-import { isNative } from "../utils/capacitor-bridge";
 import {
   applyOAuthMetadataToLocalProfile,
   exchangeRegionalOAuthCode,
@@ -48,24 +47,12 @@ export function OAuthCallback() {
         setUserLoggedIn(true);
         setStatus("success");
 
-        // Detect whether the callback is running inside the PWA standalone
-        // window or in the system browser.  On iOS, the OAuth redirect lands
-        // in Safari (system browser), not the PWA — navigating to
-        // /home/profile in Safari would leave the user stranded there.
-        // Instead we redirect to the origin so the user can return to the
-        // PWA from the home screen; the PWA will detect the session via
-        // the cookie fallback on foreground.
-        const isStandalone = typeof window !== "undefined" && window.matchMedia("(display-mode: standalone)").matches;
-
-        if (isNative() || isStandalone) {
-          setTimeout(() => {
-            navigate("/home/profile", { replace: true });
-          }, 600);
-        } else {
-          setTimeout(() => {
-            window.location.href = window.location.origin;
-          }, 1500);
-        }
+        // Full navigation (not SPA navigate, not origin/splash). After a
+        // Cloudflare Pages deploy, client-side navigate loads stale chunks
+        // and origin "/" looks like a reset.
+        setTimeout(() => {
+          if (!cancelled) enterAppAfterLogin();
+        }, 600);
       }
       return true;
     }
@@ -110,7 +97,7 @@ export function OAuthCallback() {
             setUserLoggedIn(true);
             setStatus("success");
             setTimeout(() => {
-              navigate("/home/profile", { replace: true });
+              if (!cancelled) enterAppAfterLogin();
             }, 600);
           }
           return;

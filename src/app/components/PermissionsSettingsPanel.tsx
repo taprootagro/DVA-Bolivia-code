@@ -5,11 +5,9 @@ import { useAppPermissions } from '../hooks/useAppPermissions';
 import {
   type PermissionKind,
   type PermissionOsState,
-  openSystemPermissionSettings,
   requestPermission,
   setAppPermissionEnabled,
 } from '../utils/appPermissions';
-import { toast } from '../utils/capacitor-bridge';
 
 const KIND_META: Record<
   PermissionKind,
@@ -41,13 +39,6 @@ export function PermissionsSettingsPanel() {
     setAppPermissionEnabled(kind, true);
     await requestPermission(kind);
     await refresh();
-  };
-
-  const handleOpenSystem = async () => {
-    const result = await openSystemPermissionSettings();
-    if (result === 'web_hint') {
-      await toast.show({ text: p.permissionsWebSettingsHint, duration: 'long', position: 'bottom' });
-    }
   };
 
   return (
@@ -87,13 +78,6 @@ export function PermissionsSettingsPanel() {
           );
         })
       )}
-      <button
-        type="button"
-        onClick={() => void handleOpenSystem()}
-        className="w-full py-2.5 rounded-xl bg-emerald-50 text-emerald-800 text-sm font-medium active:bg-emerald-100"
-      >
-        {p.permissionsOpenSystem}
-      </button>
     </div>
   );
 }

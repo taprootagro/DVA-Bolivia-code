@@ -253,10 +253,6 @@ export class ErrorBoundary extends Component<Props, State> {
     });
   };
 
-  handleReset = () => {
-    window.location.href = '/sw-reset';
-  };
-
   handleReload = () => {
     void executeVersionRecovery();
   };
@@ -267,8 +263,8 @@ export class ErrorBoundary extends Component<Props, State> {
     const lang = rawLang.toLowerCase();
     
     // Support 20 languages
-    if (lang.startsWith('zh-tw') || lang.startsWith('zh-hk')) return { title: '應用遇到問題', refresh: '刷新頁面', reset: '重置應用（清緩存）', desc: '可先刷新頁面；仍無法使用時再重置應用' };
-    if (lang.startsWith('zh')) return { title: '应用遇到问题', refresh: '刷新页面', reset: '重置应用（清缓存）', desc: '可先刷新页面；仍无法使用时再重置应用' };
+    if (lang.startsWith('zh-tw') || lang.startsWith('zh-hk')) return { title: '應用遇到問題', refresh: '刷新頁面', desc: '請刷新頁面後再試' };
+    if (lang.startsWith('zh')) return { title: '应用遇到问题', refresh: '刷新页面', desc: '请刷新页面后再试' };
     if (lang.startsWith('fr')) return { title: "L'application a rencontré un problème", restart: "Redémarrer l'application", desc: "Il est recommandé de redémarrer l'application" };
     if (lang.startsWith('es')) return { title: 'La aplicación encontró un problema', restart: 'Reiniciar aplicación', desc: 'Se recomienda reiniciar la aplicación para uso normal' };
     if (lang.startsWith('ar')) return { title: 'واجه التطبيق مشكلة', restart: 'إعادة تشغيل التطبيق', desc: 'يُنصح بإعادة تشغيل التطبيق لاستئناف الاستخدام الطبيعي' };
@@ -288,7 +284,7 @@ export class ErrorBoundary extends Component<Props, State> {
     if (lang.startsWith('ur')) return { title: 'ایپ میں مسئلہ پیش آیا ہے', restart: 'ایپ دوبارہ شروع کریں', desc: 'براہ کرم ایپ کو دوبارہ شروع کریں' };
     if (lang.startsWith('hi')) return { title: 'ऐप में कोई समस्या आई है', restart: 'ऐप रीस्टार्ट करें', desc: 'सामान्य उपयोग फिर से शुरू करने के लिए कृपया ऐप रीस्टार्ट करें' };
 
-    return { title: 'App encountered a problem', refresh: 'Refresh page', reset: 'Reset app (clear cache)', desc: 'Try refreshing first. Reset only if the problem persists.' };
+    return { title: 'App encountered a problem', refresh: 'Refresh page', desc: 'Please refresh the page and try again.' };
   }
 
   render() {
@@ -319,12 +315,10 @@ export class ErrorBoundary extends Component<Props, State> {
         return this.props.fallback;
       }
 
-      // ---- 最终兜底 UI：刷新优先，重置为次要 ----
+      // ---- 最终兜底 UI：只刷新，不重置 ----
       const labels = this.getLabels();
       const refreshLabel =
         'refresh' in labels ? labels.refresh : (labels as { restart?: string }).restart ?? 'Refresh page';
-      const resetLabel =
-        'reset' in labels ? labels.reset : 'Reset app (clear cache)';
 
       return (
         <div
@@ -379,28 +373,10 @@ export class ErrorBoundary extends Component<Props, State> {
                 fontSize: '0.9375rem',
                 cursor: 'pointer',
                 width: '100%',
-                marginBottom: '0.75rem',
               }}
             >
               <RefreshCw size={16} />
               {refreshLabel}
-            </button>
-            <button
-              type="button"
-              onClick={this.handleReset}
-              style={{
-                padding: '0.5rem 1rem',
-                background: 'transparent',
-                color: '#6b7280',
-                border: 'none',
-                borderRadius: '0.5rem',
-                fontSize: '0.8125rem',
-                cursor: 'pointer',
-                width: '100%',
-                textDecoration: 'underline',
-              }}
-            >
-              {resetLabel}
             </button>
           </div>
         </div>

@@ -11,7 +11,7 @@ import {
 // ============================================================
 // 全局 Chunk 加载失败恢复
 // 捕获 React 组件树外的动态 import() 失败（如路由懒加载），
-// 走 soft recovery（清 shell 缓存 + reload），多次失败才 /sw-reset。
+// 走 soft recovery（清 shell 缓存 + reload）。不自动进 /sw-reset，避免部署后登录被清空。
 // ============================================================
 
 window.addEventListener('unhandledrejection', (event) => {

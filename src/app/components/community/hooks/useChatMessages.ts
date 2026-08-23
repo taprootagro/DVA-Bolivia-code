@@ -13,6 +13,11 @@ import {
   softPruneMedia,
 } from "../../../services/chatLocalStore";
 import { bridge, isNative } from "../../../utils/capacitor-bridge";
+import {
+  recallThread,
+  rememberThread,
+  retainObjectUrl,
+} from "../../../services/chatUiMemory";
 
 export interface ChatActivePeerInput {
   peerKey: string;
@@ -79,7 +84,9 @@ export function useChatMessages(config: any, opts?: UseChatMessagesOptions) {
   const [providerName, setProviderName] = useState("");
   const [realtimeError, setRealtimeError] = useState<string | null>(null);
 
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>(
+    () => (channelId ? recallThread(channelId) ?? [] : []),
+  );
   /** Virtuoso prepend anchor — decremented on prepend, incremented when the
    *  memory cap trims items off the FRONT (keeps data[0] ↔ firstItemIndex). */
   const [firstItemIndex, setFirstItemIndex] = useState(10_000);
@@ -194,7 +201,10 @@ export function useChatMessages(config: any, opts?: UseChatMessagesOptions) {
   const chatMessagesRef = useRef<ChatMessage[]>([]);
   useEffect(() => {
     chatMessagesRef.current = chatMessages;
-  }, [chatMessages]);
+    if (channelId && channelId !== "your-channel-id" && chatMessages.length > 0) {
+      rememberThread(channelId, chatMessages);
+    }
+  }, [chatMessages, channelId]);
 
   // 已见最新服务端消息 ts（ms）。初次 hist 载入后设为历史最大值；每条新消息更新。
   // 切后台（hidden）时释放 WebSocket；回前台（visible）时用该值 since 增量补拉。
@@ -291,6 +301,17 @@ export function useChatMessages(config: any, opts?: UseChatMessagesOptions) {
       hasMoreOlderRef.current = false;
       setHasMoreOlder(false);
       return;
+    }
+
+    const cachedThread = recallThread(channelId);
+    if (cachedThread && cachedThread.length > 0) {
+      setChatMessages(cachedThread);
+      const maxTs = cachedThread.reduce((acc, x) => (x.timestamp > acc ? x.timestamp : acc), 0);
+      lastSeenTsRef.current = maxTs;
+      hasMoreOlderRef.current = true;
+      setHasMoreOlder(true);
+    } else {
+      setChatMessages([]);
     }
 
     console.log(
@@ -639,9 +660,10 @@ export function useChatMessages(config: any, opts?: UseChatMessagesOptions) {
       chatService.leaveChannel();
       resumeFnRef.current = null;
       markActivityRef.current = () => {};
-      // 本会话期间创建的所有 blob: URL 统一回收
+      rememberThread(channelId, chatMessagesRef.current);
+      // 保留 blob URL，二次打开同一会话不用重新解码
       for (const u of sessionObjectURLsRef.current) {
-        try { URL.revokeObjectURL(u); } catch { /* ignore */ }
+        retainObjectUrl(u);
       }
       sessionObjectURLsRef.current.clear();
       mediaResolvedIdsRef.current.clear();

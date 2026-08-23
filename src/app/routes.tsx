@@ -75,7 +75,14 @@ export const router = createBrowserRouter([
       },
       {
         path: "sw-reset",
-        // Handled by Service Worker — render nothing so React Router doesn't 404
+        // SW intercepts this when registered. If SW is gone, leave immediately
+        // so a refresh cannot re-register SW and run reset again.
+        loader: () => {
+          if (typeof window !== "undefined") {
+            window.location.replace("/");
+          }
+          return null;
+        },
         element: null,
       },
       {

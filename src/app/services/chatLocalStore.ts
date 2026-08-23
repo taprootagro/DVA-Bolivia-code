@@ -234,6 +234,8 @@ export async function purgeAllChatLocalData(): Promise<void> {
       });
     });
     _lastKnownTotalBytes = 0;
+    const { clearChatUiMemory } = await import("./chatUiMemory");
+    clearChatUiMemory();
   } catch (err) {
     console.warn("[chatLocalStore] purgeAllChatLocalData failed:", err);
   }

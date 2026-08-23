@@ -18,6 +18,7 @@ import { useLanguage } from "../hooks/useLanguage";
 import { useConfigContext } from "../hooks/ConfigProvider";
 import { useEdgeProfile } from "../hooks/useEdgeProfile";
 import { storageGet } from "../utils/safeStorage";
+import { formatPhoneForDisplay } from "../utils/phoneCountry";
 import {
   isUserLoggedIn,
   getUserId,
@@ -92,11 +93,13 @@ export function ProfilePage() {
       ? fallbackStore
       : appRole === "distributor";
 
-  const displayPhone = (
-    serverBackedProfile
-      ? edgePhone
-      : (edgePhone || config?.userProfile?.phone || "")
-  ).trim();
+  const displayPhone = formatPhoneForDisplay(
+    (
+      serverBackedProfile
+        ? edgePhone
+        : (edgePhone || config?.userProfile?.phone || "")
+    ).trim(),
+  );
 
   const backendOk =
     config?.backendProxyConfig?.enabled === true &&

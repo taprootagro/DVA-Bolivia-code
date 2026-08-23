@@ -151,11 +151,12 @@ export function resolveLiveStreamEmbedUrl(url: string): string | null {
 export function buildEmbedPlaybackSrc(base: string, autoplay: boolean): string {
   try {
     const u = new URL(base);
+    if (u.hostname.includes("youtube")) {
+      u.searchParams.set("playsinline", "1");
+      u.searchParams.set("controls", "1");
+    }
     if (autoplay) {
       u.searchParams.set("autoplay", "1");
-      if (u.hostname.includes("youtube")) {
-        u.searchParams.set("playsinline", "1");
-      }
     } else {
       u.searchParams.delete("autoplay");
     }

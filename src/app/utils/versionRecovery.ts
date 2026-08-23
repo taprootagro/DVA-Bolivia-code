@@ -1,6 +1,7 @@
 /**
  * Soft recovery for deploy/chunk mismatches — clear shell caches and reload
- * before falling through to /sw-reset (full reset).
+ * a few times, then stop. Never auto-navigate to /sw-reset (that URL loops
+ * if the tab stays there). Manual reset stays on the ErrorBoundary button.
  */
 
 export const SOFT_RECOVERY_KEY = 'taproot_soft_recovery_count';
@@ -9,7 +10,7 @@ export const EB_RELOAD_COUNT_KEY = '__taproot_eb_reload_count__';
 
 const SOFT_RECOVERY_MAX = 3;
 
-export type RecoveryAction = 'reload' | 'sw-reset';
+export type RecoveryAction = 'reload' | 'stop';
 
 export function isChunkLoadError(reason: unknown): boolean {
   if (reason instanceof Error) {
@@ -69,14 +70,13 @@ export async function triggerServiceWorkerUpdate(): Promise<void> {
   }
 }
 
-/** Increment counter; return sw-reset when soft recovery exhausted */
+/** Clear stale shell caches and reload a few times. Then stop — never /sw-reset. */
 export async function recoverFromVersionMismatch(): Promise<RecoveryAction> {
   const raw = sessionStorage.getItem(SOFT_RECOVERY_KEY);
   const count = raw ? parseInt(raw, 10) : 0;
 
   if (count >= SOFT_RECOVERY_MAX) {
-    sessionStorage.removeItem(SOFT_RECOVERY_KEY);
-    return 'sw-reset';
+    return 'stop';
   }
 
   sessionStorage.setItem(SOFT_RECOVERY_KEY, String(count + 1));
@@ -97,9 +97,7 @@ export function clearRecoveryCounters(): void {
 
 export async function executeVersionRecovery(): Promise<void> {
   const action = await recoverFromVersionMismatch();
-  if (action === 'sw-reset') {
-    window.location.href = '/sw-reset';
-  } else {
+  if (action === 'reload') {
     window.location.reload();
   }
 }

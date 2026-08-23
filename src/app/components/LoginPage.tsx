@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router";
 import { X, Smartphone, MessageSquare, Mail, Lock, Loader2, AlertTriangle, Info } from "lucide-react";
 import { useLanguage } from "../hooks/useLanguage";
-import { setUserLoggedIn, setServerUserId, setAccessToken } from "../utils/auth";
+import { setUserLoggedIn, setServerUserId, setAccessToken, enterAppAfterLogin } from "../utils/auth";
 import { useHomeConfig } from "../hooks/useHomeConfig";
 import { useAppIcon } from "../hooks/useAppIcon";
 import { bridge } from "../utils/capacitor-bridge";
@@ -133,9 +133,9 @@ export function LoginPage() {
       await syncUserProfileFromServer(session.access_token);
       if (user) applyOAuthMetadataToLocalProfile(user);
       setUserLoggedIn(true);
-      navigate("/home/profile");
+      enterAppAfterLogin();
     },
-    [navigate],
+    [],
   );
 
   // ---- Helper: format countdown text ----
@@ -335,7 +335,7 @@ export function LoginPage() {
         // Demo mode: accept any code or password
         console.log(`[Login] Demo mode: no backend, using local ID`);
         setUserLoggedIn(true);
-        navigate("/home/profile");
+        enterAppAfterLogin();
       }
     } catch (err: any) {
       setErrorMsg(err?.message?.includes("fetch") ? t.login.networkError : (err?.message || t.login.loginFailed));
@@ -358,7 +358,7 @@ export function LoginPage() {
       // Demo mode: just log in directly
       console.log(`[Login] Demo mode: social login (${platform})`);
       setUserLoggedIn(true);
-      navigate("/home/profile");
+      enterAppAfterLogin();
       return;
     }
 
@@ -392,7 +392,7 @@ export function LoginPage() {
               setAccessToken(result.accessToken);
               setServerUserId(result.userId);
               setUserLoggedIn(true);
-              navigate("/home/profile");
+              enterAppAfterLogin();
             } catch (err: any) {
               setErrorMsg(err?.message || t.login.oauthError);
               setIsLoading(false);
@@ -416,7 +416,7 @@ export function LoginPage() {
               setAccessToken(result.accessToken);
               setServerUserId(result.userId);
               setUserLoggedIn(true);
-              navigate("/home/profile");
+              enterAppAfterLogin();
             } catch (err: any) {
               setErrorMsg(err?.message || t.login.oauthError);
               setIsLoading(false);

@@ -12,7 +12,7 @@
 //     force update/reload, cache purge, kill switch, announcements
 // ============================================================
 
-const CACHE_VERSION = 'v13'; // cross-origin images cache-first; same as PWA static assets
+const CACHE_VERSION = 'v14'; // post-deploy login: no auto /sw-reset; fresh shell after login
 const CACHE_PREFIX = 'taproot-agro';
 const CACHE_NAME = `${CACHE_PREFIX}-${CACHE_VERSION}`;
 const IMG_CACHE_NAME = `${CACHE_PREFIX}-images-${CACHE_VERSION}`;
@@ -382,20 +382,9 @@ async function markCheckedThisPeriod() {
 // ============================================================
 // 1x1 transparent PNG placeholder for offline uncached images
 // ============================================================
-const OFFLINE_IMAGE_PLACEHOLDER = 'data:image/svg+xml,' + encodeURIComponent(
-  '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300" viewBox="0 0 400 300">' +
-  '<rect fill="#f0fdf4" width="400" height="300"/>' +
-  '<text x="200" y="140" text-anchor="middle" fill="#059669" font-family="system-ui" font-size="16">Offline</text>' +
-  '<text x="200" y="165" text-anchor="middle" fill="#6b7280" font-family="system-ui" font-size="12">Image not cached</text>' +
-  '</svg>'
-);
-
 function createOfflineImageResponse() {
-  const offlineText = swt('offline');
   const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300" viewBox="0 0 400 300">' +
     '<rect fill="#f0fdf4" width="400" height="300"/>' +
-    '<path d="M185 130 l15-20 l15 20 l-7 0 l0 15 l-16 0 l0-15z" fill="#d1d5db"/>' +
-    '<text x="200" y="170" text-anchor="middle" fill="#9ca3af" font-family="system-ui" font-size="11">' + offlineText + '</text>' +
     '</svg>';
   return new Response(svg, {
     status: 200,
@@ -731,7 +720,9 @@ async function safeRespond(handler, originalRequest) {
       }
 
       if (originalRequest.mode === 'navigate') {
-        return createOfflineFallbackPage();
+        const cached = await caches.match('/index.html') || await caches.match('/');
+        if (cached) return stripRedirect(cached);
+        return createBlankAppShell();
       }
 
       return new Response('Offline - Resource not cached', {
@@ -753,69 +744,10 @@ function isImageRequest(request, url) {
 }
 
 // ============================================================
-// EMERGENCY RESET - /sw-reset endpoint
+// /sw-reset — production never wipes; same as a normal app navigation
 // ============================================================
 async function handleSwReset() {
-  // Pre-resolve translated strings and inject into the page as JSON
-  var ri = {
-    resetting: swt('resetting'), backingUp: swt('backingUp'),
-    unregisteringSW: swt('unregisteringSW'), clearingCache: swt('clearingCache'),
-    cleaningDB: swt('cleaningDB'), clearingStorage: swt('clearingStorage'),
-    restoringData: swt('restoringData'), resetComplete: swt('resetComplete'),
-    swUnregistered: swt('swUnregistered'), dataPreserved: swt('dataPreserved'),
-    openApp: swt('openApp'), resetFailed: swt('resetFailed'),
-    manualClear: swt('manualClear'), retry: swt('retry'),
-  };
-  var tJson = JSON.stringify(ri);
-
-  const html = '<!DOCTYPE html>' +
-'<html' + dirAttr() + '><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
-'<title>Reset</title></head>' +
-'<body style="display:flex;align-items:center;justify-content:center;min-height:100vh;font-family:system-ui;background:#f0fdf4;color:#065f46;text-align:center;padding:2rem">' +
-'<div id="status">' +
-'<svg style="width:48px;height:48px;margin:0 auto 1rem;animation:spin 1s linear infinite" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2"><circle cx="12" cy="12" r="10" opacity="0.3"/><path d="M12 2a10 10 0 0 1 10 10"/></svg>' +
-'<style>@keyframes spin{to{transform:rotate(360deg)}}</style>' +
-'<p id="message">' + ri.resetting + '</p>' +
-'</div>' +
-'<script>' +
-'(async function(){' +
-'var s=document.getElementById("status");' +
-'var m=document.getElementById("message");' +
-'var t=' + tJson + ';' +
-    'try{' +
-    'm.textContent=t.backingUp;var b={};' +
-    'var ck=["isLoggedIn","agri_user_numeric_id","agri_server_user_id","agri_auth_source","taprootagro-auth","agri_access_token","accounting_transactions","taproot-sync-queue","pickup-address","app-language","taproot_home_config"];' +
-    'for(var k of ck){var v=localStorage.getItem(k);if(v)b[k]=v;}' +
-    'if(Object.keys(b).length>0){sessionStorage.setItem("__taproot_reset_backup__",JSON.stringify(b));}' +
-    'm.textContent=t.unregisteringSW;' +
-    'var rs=await navigator.serviceWorker.getRegistrations();await Promise.all(rs.map(function(r){return r.unregister();}));' +
-    'm.textContent=t.clearingCache;' +
-    'var ks=await caches.keys();await Promise.all(ks.map(function(k){return caches.delete(k);}));' +
-    'm.textContent=t.cleaningDB;' +
-    'try{var dbs=await indexedDB.databases();for(var d of dbs){if(d.name&&d.name!=="CryptoKeys")indexedDB.deleteDatabase(d.name);}}catch(e2){try{indexedDB.deleteDatabase("AppDB");}catch(e3){}}' +
-    'm.textContent=t.clearingStorage;localStorage.clear();' +
-    'm.textContent=t.restoringData;for(var p of Object.entries(b)){localStorage.setItem(p[0],p[1]);}' +
-    'sessionStorage.removeItem("__taproot_reset_backup__");' +
-    's.innerHTML=' +
-    '\'<div style="font-size:48px;margin-bottom:1rem">\\u2705</div>' +
-    '<h2 style="margin-bottom:0.5rem">\'+t.resetComplete+\'</h2>' +
-    '<p style="margin-bottom:0.5rem;color:#6b7280">\'+t.swUnregistered+\'</p>' +
-    '<p style="margin-bottom:1rem;color:#059669;font-weight:600">\'+t.dataPreserved+\'</p>' +
-    '<button onclick="location.href=\\\'/\\\'" style="padding:0.75rem 2rem;background:#10b981;color:white;border:none;border-radius:0.75rem;font-size:1rem;cursor:pointer">\'+t.openApp+\'</button>\';' +
-    '}catch(e){' +
-    's.innerHTML=' +
-    '\'<div style="font-size:48px;margin-bottom:1rem">\\u26A0\\uFE0F</div>' +
-    '<h2 style="margin-bottom:0.5rem">\'+t.resetFailed+\'</h2>' +
-    '<p style="color:#dc2626;margin-bottom:0.5rem">\'+e.message+\'</p>' +
-    '<p style="margin-top:1rem;color:#6b7280;font-size:0.875rem">\'+t.manualClear+\'</p>' +
-    '<button onclick="location.reload()" style="padding:0.75rem 2rem;background:#6b7280;color:white;border:none;border-radius:0.75rem;font-size:1rem;cursor:pointer;margin-top:1rem">\'+t.retry+\'</button>\';' +
-    '}})();' +
-    '</script></body></html>';
-
-  return new Response(html, {
-    status: 200,
-    headers: { 'Content-Type': 'text/html; charset=utf-8' }
-  });
+  return handleNavigation();
 }
 
 // ============================================================
@@ -858,9 +790,9 @@ async function handleNavigation() {
     return stripRedirect(shell);
   }
 
-  // 无本地 shell：首次访问或缓存已清空
+  // 无本地 shell：首次访问或缓存已清空。不展示「无网络」页。
   if (!self.navigator.onLine) {
-    return createOfflineFallbackPage();
+    return createBlankAppShell();
   }
 
   try {
@@ -885,30 +817,15 @@ async function handleNavigation() {
     throw new Error('HTTP ' + networkResponse.status);
   } catch (error) {
     console.warn('[SW] Navigation fetch failed (no shell):', error.message || error);
-    return createOfflineFallbackPage();
+    return createBlankAppShell();
   }
 }
 
-/**
- * Last-resort offline page — only shown when the app has NEVER been loaded before
- * (no cached index.html at all). This is an extreme edge case.
- */
-function createOfflineFallbackPage() {
+/** Empty app-colored document — never a branded "offline / no network" page. */
+function createBlankAppShell() {
   return new Response(
-    '<!DOCTYPE html><html' + dirAttr() + '><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
-    '<title>Offline</title>' +
-    '<style>*{margin:0;padding:0;box-sizing:border-box}body{display:flex;align-items:center;justify-content:center;min-height:100vh;font-family:system-ui,-apple-system,sans-serif;background:#f0fdf4;color:#065f46;text-align:center;padding:2rem}' +
-    '.card{background:white;border-radius:1rem;padding:2rem;box-shadow:0 4px 20px rgba(0,0,0,0.08);max-width:320px;width:100%}' +
-    '.icon{width:64px;height:64px;background:#d1fae5;border-radius:1rem;display:flex;align-items:center;justify-content:center;margin:0 auto 1rem}' +
-    'h2{margin-bottom:0.5rem;color:#065f46}p{color:#6b7280;margin-bottom:1rem;font-size:0.875rem}' +
-    'button{padding:0.75rem 1.5rem;background:#10b981;color:white;border:none;border-radius:0.75rem;cursor:pointer;font-size:0.875rem;width:100%}' +
-    'button:active{background:#059669}</style></head>' +
-    '<body><div class="card">' +
-    '<div class="icon"><svg width="32" height="32" fill="none" stroke="#059669" stroke-width="2" viewBox="0 0 24 24"><path d="M1 1l22 22M16.72 11.06A10.94 10.94 0 0 1 19 12.55M5 12.55a10.94 10.94 0 0 1 5.17-2.39M10.71 5.05A16 16 0 0 1 22.56 9M1.42 9a15.91 15.91 0 0 1 4.7-2.88M8.53 16.11a6 6 0 0 1 6.95 0M12 20h.01"/></svg></div>' +
-    '<h2>' + swt('noNetwork') + '</h2>' +
-    '<p>' + swt('noNetworkMsg') + '</p>' +
-    '<button onclick="location.reload()">' + swt('retry') + '</button>' +
-    '</div></body></html>',
+    '<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
+    '<style>html,body{margin:0;min-height:100vh;background:#f0fdf4}</style></head><body></body></html>',
     {
       status: 200,
       headers: { 'Content-Type': 'text/html; charset=utf-8' }

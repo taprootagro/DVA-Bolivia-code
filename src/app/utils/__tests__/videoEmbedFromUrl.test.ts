@@ -14,6 +14,14 @@ describe("buildEmbedPlaybackSrc", () => {
     const u = new URL(out);
     expect(u.searchParams.get("autoplay")).toBe("1");
     expect(u.searchParams.get("playsinline")).toBe("1");
+    expect(u.searchParams.get("controls")).toBe("1");
+  });
+
+  it("keeps YouTube controls on while paused so the timeline stays available", () => {
+    const base = getYoutubeEmbedUrl("https://www.youtube.com/watch?v=dQw4w9WgXcQ")!;
+    const u = new URL(buildEmbedPlaybackSrc(base, false));
+    expect(u.searchParams.get("controls")).toBe("1");
+    expect(u.searchParams.get("playsinline")).toBe("1");
   });
 
   it("removes autoplay when pausing", () => {
