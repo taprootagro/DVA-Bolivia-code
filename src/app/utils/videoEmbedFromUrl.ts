@@ -147,13 +147,18 @@ export function resolveLiveStreamEmbedUrl(url: string): string | null {
   return getNonYoutubeEmbedUrl(t);
 }
 
-/** 直播 feed iframe：在用户点击回调里同步改 src，避免 remount 丢失 user activation */
+/** 直播 feed iframe：playsinline + 平台 API；不要靠改 src 触发播放（iOS 会丢掉手势，变成要点两次）。 */
 export function buildEmbedPlaybackSrc(base: string, autoplay: boolean): string {
   try {
     const u = new URL(base);
     if (u.hostname.includes("youtube")) {
       u.searchParams.set("playsinline", "1");
       u.searchParams.set("controls", "1");
+      u.searchParams.set("enablejsapi", "1");
+    }
+    if (u.hostname.includes("vimeo")) {
+      u.searchParams.set("playsinline", "1");
+      u.searchParams.set("api", "1");
     }
     if (autoplay) {
       u.searchParams.set("autoplay", "1");
@@ -164,6 +169,46 @@ export function buildEmbedPlaybackSrc(base: string, autoplay: boolean): string {
   } catch {
     return base;
   }
+}
+
+export type EmbedPlaybackState = "playing" | "paused";
+
+/** Parse YouTube / Vimeo iframe postMessage into play/pause. */
+export function readEmbedPlaybackState(data: unknown, origin: string): EmbedPlaybackState | null {
+  const host = origin.toLowerCase();
+  let payload: unknown = data;
+  if (typeof data === "string") {
+    try {
+      payload = JSON.parse(data);
+    } catch {
+      return null;
+    }
+  }
+  if (!payload || typeof payload !== "object") return null;
+  const p = payload as { event?: unknown; info?: unknown; method?: unknown };
+
+  if (host.includes("youtube")) {
+    if (p.event === "onStateChange" && typeof p.info === "number") {
+      if (p.info === 1 || p.info === 3) return "playing";
+      if (p.info === 2 || p.info === 0 || p.info === 5) return "paused";
+    }
+    const state =
+      p.info && typeof p.info === "object" && "playerState" in p.info
+        ? (p.info as { playerState?: unknown }).playerState
+        : undefined;
+    if (typeof state === "number") {
+      if (state === 1 || state === 3) return "playing";
+      if (state === 2 || state === 0 || state === 5) return "paused";
+    }
+  }
+
+  if (host.includes("vimeo")) {
+    const ev = p.event ?? p.method;
+    if (ev === "play" || ev === "playing") return "playing";
+    if (ev === "pause" || ev === "ended") return "paused";
+  }
+
+  return null;
 }
 
 /**

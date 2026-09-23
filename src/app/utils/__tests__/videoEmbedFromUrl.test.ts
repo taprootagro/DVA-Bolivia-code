@@ -4,6 +4,7 @@ import {
   getNonYoutubeEmbedUrl,
   getYoutubeEmbedUrl,
   isAllowedVideoIframeSrc,
+  readEmbedPlaybackState,
   resolveLiveStreamEmbedUrl,
 } from "../videoEmbedFromUrl";
 
@@ -15,6 +16,7 @@ describe("buildEmbedPlaybackSrc", () => {
     expect(u.searchParams.get("autoplay")).toBe("1");
     expect(u.searchParams.get("playsinline")).toBe("1");
     expect(u.searchParams.get("controls")).toBe("1");
+    expect(u.searchParams.get("enablejsapi")).toBe("1");
   });
 
   it("keeps YouTube controls on while paused so the timeline stays available", () => {
@@ -22,6 +24,8 @@ describe("buildEmbedPlaybackSrc", () => {
     const u = new URL(buildEmbedPlaybackSrc(base, false));
     expect(u.searchParams.get("controls")).toBe("1");
     expect(u.searchParams.get("playsinline")).toBe("1");
+    expect(u.searchParams.has("autoplay")).toBe(false);
+    expect(u.searchParams.get("enablejsapi")).toBe("1");
   });
 
   it("removes autoplay when pausing", () => {
@@ -38,16 +42,43 @@ describe("buildEmbedPlaybackSrc", () => {
     expect(new URL(out).searchParams.get("autoplay")).toBe("1");
   });
 
-  it("adds autoplay for Vimeo embed", () => {
+  it("adds autoplay and playsinline for Vimeo embed", () => {
     const base = resolveLiveStreamEmbedUrl("https://vimeo.com/123456789")!;
     const out = buildEmbedPlaybackSrc(base, true);
-    expect(new URL(out).searchParams.get("autoplay")).toBe("1");
+    const u = new URL(out);
+    expect(u.searchParams.get("autoplay")).toBe("1");
+    expect(u.searchParams.get("playsinline")).toBe("1");
+    expect(u.searchParams.get("api")).toBe("1");
   });
 
   it("adds autoplay for Facebook embed", () => {
     const base = resolveLiveStreamEmbedUrl("https://www.facebook.com/watch/?v=10153231379946729")!;
     const out = buildEmbedPlaybackSrc(base, true);
     expect(new URL(out).searchParams.get("autoplay")).toBe("1");
+  });
+});
+
+describe("readEmbedPlaybackState", () => {
+  it("maps YouTube onStateChange playing", () => {
+    expect(
+      readEmbedPlaybackState(
+        JSON.stringify({ event: "onStateChange", info: 1 }),
+        "https://www.youtube-nocookie.com",
+      ),
+    ).toBe("playing");
+  });
+
+  it("maps YouTube infoDelivery paused", () => {
+    expect(
+      readEmbedPlaybackState(
+        { event: "infoDelivery", info: { playerState: 2 } },
+        "https://www.youtube.com",
+      ),
+    ).toBe("paused");
+  });
+
+  it("maps Vimeo play events", () => {
+    expect(readEmbedPlaybackState({ event: "play" }, "https://player.vimeo.com")).toBe("playing");
   });
 });
 

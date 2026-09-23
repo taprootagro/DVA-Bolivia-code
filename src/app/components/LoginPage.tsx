@@ -442,6 +442,9 @@ export function LoginPage() {
     }
 
     const redirectTo = await resolveNativeOAuthRedirectTo();
+    // Google 默认会沿用 Chrome 已登录账户。强制先出账户列表，避免共用手机登错号。
+    const oauthQueryParams =
+      provider === "google" ? { prompt: "select_account" } : undefined;
 
     try {
       // Native：Custom Tabs + 包名 scheme 深链（appId://auth/callback）
@@ -456,6 +459,7 @@ export function LoginPage() {
           options: {
             redirectTo,
             skipBrowserRedirect: true,
+            queryParams: oauthQueryParams,
           },
         });
         if (error) {
@@ -473,7 +477,7 @@ export function LoginPage() {
 
       const { error } = await client.auth.signInWithOAuth({
         provider,
-        options: { redirectTo },
+        options: { redirectTo, queryParams: oauthQueryParams },
       });
       if (error) {
         setErrorMsg(error.message || t.login.oauthError);

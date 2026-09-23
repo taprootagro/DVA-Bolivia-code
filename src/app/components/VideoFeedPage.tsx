@@ -7,7 +7,7 @@ import { CmsMediaImg } from "./CmsMediaImg";
 import { convertCoord, type CoordSystem } from "../utils/coordTransform";
 import { isWeChatBrowser, initWxSdk, setupWxShare } from "../utils/wxJsSdk";
 import { useBackHandler } from "../hooks/useBackHandler";
-import { buildEmbedPlaybackSrc, resolveLiveStreamEmbedUrl } from "../utils/videoEmbedFromUrl";
+import { buildEmbedPlaybackSrc, readEmbedPlaybackState, resolveLiveStreamEmbedUrl } from "../utils/videoEmbedFromUrl";
 import { bridge } from "../utils/capacitor-bridge";
 
 interface VideoFeedPageProps {
@@ -18,7 +18,7 @@ interface VideoFeedPageProps {
 const EMBED_IFRAME_ALLOW =
   "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen";
 
-/** Leave YouTube/Vimeo chrome (seek bar) uncovered so users can scrub. */
+/** Leave player chrome (seek bar / iOS native controls) uncovered so users can scrub. */
 const EMBED_TIMELINE_INSET = "calc(5.5rem + env(safe-area-inset-bottom, 0px))";
 
 // 视频 URL 列表从配置 (config.videoFeed.videoSources) 读取，
@@ -106,7 +106,7 @@ export function VideoFeedPage({ onClose, startIndex = 0 }: VideoFeedPageProps) {
         viewers: "0",
       }));
 
-  // 默认不自动播：首次点击屏幕后在用户手势内 play() + 取消静音，避免 iOS/Chrome 拦截有声自动播放
+  // 进页暂停，等用户点一次播放。嵌入视频不要拦截点击去改 iframe.src，否则 iOS 会丢掉手势，还得再点 YouTube。
   const [currentIndex, setCurrentIndex] = useState(() => Math.min(startIndex, Math.max(0, (liveStreams.length > 0 ? liveStreams.length : 3) - 1)));
   const [isMuted, setIsMuted] = useState(true);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -157,25 +157,65 @@ export function VideoFeedPage({ onClose, startIndex = 0 }: VideoFeedPageProps) {
   const embedIframeRef = useRef<HTMLIFrameElement | null>(null);
   const wheelTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const syncEmbedIframeSrc = useCallback((embedUrl: string, autoplay: boolean) => {
-    const iframe = embedIframeRef.current;
-    if (!iframe) return;
-    const next = buildEmbedPlaybackSrc(embedUrl, autoplay);
-    if (iframe.src !== next) {
-      iframe.src = next;
+  const currentEmbedUrl = videos[currentIndex]?.embedUrl;
+
+  const postEmbedCommand = useCallback((embedUrl: string, playing: boolean) => {
+    const w = embedIframeRef.current?.contentWindow;
+    if (!w) return;
+    let host = "";
+    try {
+      host = new URL(embedUrl).hostname.toLowerCase();
+    } catch {
+      return;
+    }
+    if (host.includes("youtube")) {
+      w.postMessage(JSON.stringify({ event: "command", func: playing ? "playVideo" : "pauseVideo", args: [] }), "*");
+      if (playing) {
+        w.postMessage(JSON.stringify({ event: "command", func: "unMute", args: [] }), "*");
+      }
+      return;
+    }
+    if (host.includes("vimeo")) {
+      w.postMessage({ method: playing ? "play" : "pause" }, "*");
     }
   }, []);
 
-  const currentEmbedUrl = videos[currentIndex]?.embedUrl;
+  const hookEmbedPlayerApi = useCallback((embedUrl: string) => {
+    const w = embedIframeRef.current?.contentWindow;
+    if (!w) return;
+    let host = "";
+    try {
+      host = new URL(embedUrl).hostname.toLowerCase();
+    } catch {
+      return;
+    }
+    if (host.includes("youtube")) {
+      w.postMessage(JSON.stringify({ event: "listening", id: "live-feed" }), "*");
+      w.postMessage(JSON.stringify({ event: "command", func: "addEventListener", args: ["onStateChange"] }), "*");
+      return;
+    }
+    if (host.includes("vimeo")) {
+      w.postMessage({ method: "addEventListener", value: "play" }, "*");
+      w.postMessage({ method: "addEventListener", value: "pause" }, "*");
+    }
+  }, []);
 
-  // 切流时重置播放态；嵌入 iframe 回到无 autoplay 的 src（不 remount）
+  // 切流时回到暂停；不要改 iframe.src 来 autoplay（会逼用户再点一次平台播放器）
   useEffect(() => {
     setIsPlaying(false);
     setIsMuted(true);
-    if (currentEmbedUrl) {
-      syncEmbedIframeSrc(currentEmbedUrl, false);
-    }
-  }, [currentIndex, currentEmbedUrl, syncEmbedIframeSrc]);
+  }, [currentIndex, currentEmbedUrl]);
+
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      const next = readEmbedPlaybackState(event.data, event.origin);
+      if (!next) return;
+      setIsPlaying(next === "playing");
+      if (next === "playing") setIsMuted(false);
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
 
   // 标记视频加载状态
   const handleVideoCanPlay = useCallback((index: number) => {
@@ -293,12 +333,11 @@ export function VideoFeedPage({ onClose, startIndex = 0 }: VideoFeedPageProps) {
     if (currentVideoData?.embedUrl) {
       const embedUrl = currentVideoData.embedUrl;
       if (isPlaying) {
-        syncEmbedIframeSrc(embedUrl, false);
+        postEmbedCommand(embedUrl, false);
         setIsPlaying(false);
         return;
       }
-      // 必须在同一次用户手势内改 iframe.src，不可依赖 React key 重建 iframe
-      syncEmbedIframeSrc(embedUrl, true);
+      postEmbedCommand(embedUrl, true);
       setIsMuted(false);
       setIsPlaying(true);
       return;
@@ -397,7 +436,7 @@ export function VideoFeedPage({ onClose, startIndex = 0 }: VideoFeedPageProps) {
         navPausedRef.current = true;
       }
     } else if (isPlaying && currentVideoData.embedUrl) {
-      syncEmbedIframeSrc(currentVideoData.embedUrl, false);
+      postEmbedCommand(currentVideoData.embedUrl, false);
       setIsPlaying(false);
       navPausedRef.current = true;
     }
@@ -410,7 +449,7 @@ export function VideoFeedPage({ onClose, startIndex = 0 }: VideoFeedPageProps) {
     if (navPausedRef.current) {
       const currentVideoData = videos[currentIndex];
       if (currentVideoData?.embedUrl) {
-        syncEmbedIframeSrc(currentVideoData.embedUrl, true);
+        postEmbedCommand(currentVideoData.embedUrl, true);
         setIsPlaying(true);
       } else {
         const currentVideo = videoRefs.current[currentIndex];
@@ -579,6 +618,10 @@ export function VideoFeedPage({ onClose, startIndex = 0 }: VideoFeedPageProps) {
           const isCurrent = index === currentIndex;
           const isLoading = loadingStates[index];
           const hasError = errorStates[index];
+          // iOS Safari/PWA: a transform on the ancestor blanks/covers inline video.
+          // Drop it once this slide is the playing, settled current item.
+          const releaseIosVideoLayer =
+            isCurrent && isPlaying && !isDragging && Math.abs(offset) < 0.01;
 
           // 获取当前视频的分享/导航配置
           const currentStream = liveStreams[index];
@@ -604,15 +647,15 @@ export function VideoFeedPage({ onClose, startIndex = 0 }: VideoFeedPageProps) {
               key={video.id}
               className="absolute inset-0 w-full h-full transition-all duration-300 ease-out"
               style={{
-                transform: `translateY(${offset}%)`,
+                transform: releaseIosVideoLayer ? "none" : `translateY(${offset}%)`,
                 opacity: isCurrent ? 1 : 0.3,
                 pointerEvents: isCurrent ? "auto" : "none",
               }}
             >
               {isVisible && (
                 <div className="relative w-full h-full bg-black">
-                  {/* 缩略图背景（视频加载前显示） */}
-                  {video.thumbnail && (
+                  {/* 缩略图背景（视频加载前显示；播放后隐藏，避免 iOS 叠在画面上） */}
+                  {video.thumbnail && !(isCurrent && isPlaying) && (
                     <CmsMediaImg
                       src={video.thumbnail}
                       alt=""
@@ -624,7 +667,6 @@ export function VideoFeedPage({ onClose, startIndex = 0 }: VideoFeedPageProps) {
                   {video.embedUrl ? (
                     isCurrent && (
                       <>
-                        {/* 中间手势层负责点按播放和上下滑；底部留空给播放器时间线。 */}
                         <iframe
                           ref={isCurrent ? embedIframeRef : undefined}
                           key={video.id}
@@ -634,21 +676,20 @@ export function VideoFeedPage({ onClose, startIndex = 0 }: VideoFeedPageProps) {
                           allow={EMBED_IFRAME_ALLOW}
                           allowFullScreen
                           referrerPolicy="strict-origin-when-cross-origin"
+                          onLoad={() => {
+                            if (isCurrent) hookEmbedPlayerApi(video.embedUrl);
+                          }}
                         />
-                        <button
-                          type="button"
-                          data-timeline-hole={isPlaying ? "1" : "0"}
-                          className="absolute left-0 right-0 top-0 flex items-center justify-center z-10"
-                          style={{ bottom: isPlaying ? EMBED_TIMELINE_INSET : 0 }}
-                          onClick={togglePlay}
-                          aria-label={v?.sampleVideo || "Play"}
-                        >
-                          {!isPlaying && (
-                            <div className="w-20 h-20 bg-black/50 rounded-full flex items-center justify-center pointer-events-none">
-                              <Play className="w-10 h-10 text-white ms-1" fill="white" />
-                            </div>
-                          )}
-                        </button>
+                        {!isPlaying && (
+                          <div
+                            data-testid="embed-play-hint"
+                            data-timeline-hole="0"
+                            className="absolute left-1/2 top-1/2 z-10 w-20 h-20 -translate-x-1/2 -translate-y-1/2 rounded-full bg-black/50 flex items-center justify-center pointer-events-none"
+                            aria-hidden
+                          >
+                            <Play className="w-10 h-10 text-white ms-1" fill="white" />
+                          </div>
+                        )}
                       </>
                     )
                   ) : (
@@ -657,7 +698,7 @@ export function VideoFeedPage({ onClose, startIndex = 0 }: VideoFeedPageProps) {
                         ref={(el) => (videoRefs.current[index] = el)}
                         src={resolveMedia(video.url)}
                         poster={video.thumbnail ? resolveMedia(video.thumbnail) : undefined}
-                        className="relative w-full h-full object-contain z-[1]"
+                        className="video-feed-direct relative w-full h-full object-contain z-[1]"
                         loop
                         playsInline
                         muted={isMuted}
@@ -704,14 +745,13 @@ export function VideoFeedPage({ onClose, startIndex = 0 }: VideoFeedPageProps) {
                     </>
                   )}
 
-                  {/* 视频信息和互动区域 */}
+                  {/* 视频信息和互动区域。播放时上移，避免挡住播放器控件；iOS 上透明层会盖住画面。 */}
                   <div
+                    data-testid={isCurrent ? "video-feed-info" : undefined}
+                    data-timeline-hole={isCurrent && isPlaying ? "1" : "0"}
                     className="absolute left-0 right-0 pb-4 px-4 pt-4 bg-gradient-to-t from-black/90 via-black/50 to-transparent z-10"
                     style={{
-                      bottom:
-                        video.embedUrl && isCurrent && isPlaying
-                          ? EMBED_TIMELINE_INSET
-                          : 0,
+                      bottom: isCurrent && isPlaying ? EMBED_TIMELINE_INSET : 0,
                     }}
                   >
                     <div className="flex items-end gap-3">

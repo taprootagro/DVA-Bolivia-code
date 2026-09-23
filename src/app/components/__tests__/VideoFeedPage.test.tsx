@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { VideoFeedPage } from "../VideoFeedPage";
 
@@ -52,32 +52,52 @@ vi.mock("../../utils/capacitor-bridge", () => ({
   bridge: { app: { openUrl: vi.fn() } },
 }));
 
+function dispatchYoutubePlaying() {
+  act(() => {
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        origin: "https://www.youtube-nocookie.com",
+        data: JSON.stringify({ event: "onStateChange", info: 1 }),
+      }),
+    );
+  });
+}
+
 describe("VideoFeedPage embed swipe surface", () => {
-  it("exposes the player timeline after playback so seek clicks reach the iframe", () => {
+  it("does not autoplay, and does not capture the first play tap", () => {
     render(<VideoFeedPage onClose={() => {}} />);
 
     const iframe = screen.getByTitle("YouTube one");
     expect(iframe.tagName).toBe("IFRAME");
+    const src = iframe.getAttribute("src") ?? "";
+    expect(src).not.toContain("autoplay=1");
+    expect(src).toContain("enablejsapi=1");
     expect(iframe.className).toContain("pointer-events-auto");
 
-    const overlay = screen.getByRole("button", { name: "Play" });
-    expect(overlay.getAttribute("data-timeline-hole")).toBe("0");
+    const hint = screen.getByTestId("embed-play-hint");
+    expect(hint.className).toContain("pointer-events-none");
+    expect(screen.queryByRole("button", { name: "Play" })).not.toBeInTheDocument();
+  });
 
-    fireEvent.click(overlay);
+  it("hides the play hint when the embed reports playing", () => {
+    render(<VideoFeedPage onClose={() => {}} />);
+    expect(screen.getByTestId("embed-play-hint")).toBeInTheDocument();
 
-    expect(iframe.className).toContain("pointer-events-auto");
-    expect(screen.getByRole("button", { name: "Play" }).getAttribute("data-timeline-hole")).toBe("1");
+    dispatchYoutubePlaying();
+
+    expect(screen.queryByTestId("embed-play-hint")).not.toBeInTheDocument();
+    expect(screen.getByTestId("video-feed-info").getAttribute("data-timeline-hole")).toBe("1");
   });
 
   it("still switches videos on vertical swipe after the embed is playing", () => {
     render(<VideoFeedPage onClose={() => {}} />);
 
-    const overlay = screen.getByRole("button", { name: "Play" });
-    fireEvent.click(overlay);
+    dispatchYoutubePlaying();
 
-    fireEvent.touchStart(overlay, { targetTouches: [{ clientY: 400 }] });
-    fireEvent.touchMove(overlay, { targetTouches: [{ clientY: 280 }] });
-    fireEvent.touchEnd(overlay);
+    const info = screen.getByTestId("video-feed-info");
+    fireEvent.touchStart(info, { targetTouches: [{ clientY: 400 }] });
+    fireEvent.touchMove(info, { targetTouches: [{ clientY: 280 }] });
+    fireEvent.touchEnd(info);
 
     expect(screen.getByTitle("YouTube two")).toBeInTheDocument();
   });
