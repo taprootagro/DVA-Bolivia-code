@@ -12,7 +12,7 @@ import { initTaprootDB } from '../utils/db';
 import { defaultConfig } from '../hooks/useHomeConfig';
 import { ConfigProvider } from '../hooks/ConfigProvider';
 import { useDynamicManifest } from '../hooks/useDynamicManifest';
-import { applyNativeSystemChrome, isNative, preloadVoices, splashScreen } from '../utils/capacitor-bridge';
+import { app, applyNativeSystemChrome, isNative, preloadVoices, splashScreen } from '../utils/capacitor-bridge';
 import { useNativePushRegistration } from '../hooks/useNativePushRegistration';
 import { useNativeOAuthCallback } from '../hooks/useNativeOAuthCallback';
 import { usePhoneShellEnabled } from '../utils/phoneViewport';
@@ -48,11 +48,23 @@ export function Root() {
     // CSS 通过 html[data-native] 选择器适配安全区，不依赖 display-mode: standalone
     if (isNative()) {
       document.documentElement.setAttribute('data-native', '');
-      void splashScreen.hide();
-      void applyNativeSystemChrome();
+      void splashScreen.hide().then(() => applyNativeSystemChrome());
     }
 
     void preloadVoices();
+  }, []);
+
+  useEffect(() => {
+    if (!isNative()) return;
+    let remove: (() => void) | undefined;
+    void app.onStateChange(({ isActive }) => {
+      if (isActive) void applyNativeSystemChrome();
+    }).then((cleanup) => {
+      remove = cleanup;
+    });
+    return () => {
+      remove?.();
+    };
   }, []);
 
   // 首帧绘制后再空闲预加载 chunk，避免与 SW/首屏争抢

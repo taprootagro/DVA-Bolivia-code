@@ -12,6 +12,7 @@
  * - 用完即释放，不在后台占用摄像头硬件
  */
 import { useRef, useState, useEffect, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { X, Flashlight, FlashlightOff, Camera, ImageIcon, CameraOff, Settings } from "lucide-react";
 import { cameraManager, CameraError } from "../utils/cameraManager";
 import { bridge, isNative } from "../utils/capacitor-bridge";
@@ -127,23 +128,31 @@ export function QRScannerCapture({ onScan, onClose }: QRScannerCaptureProps) {
     (async () => {
       try {
         setTorchSupported(true);
-        const result = await bridge.barcodeScanner.scan({
+        const begin = await bridge.barcodeScanner.beginSession({
           onPreviewReady: () => {
             if (!cancelled) setPreviewReady(true);
           },
         });
         if (cancelled || scannedRef.current) return;
 
+        if (!begin.ok) {
+          if (begin.reason === 'denied') {
+            setPermissionDenied(true);
+            setNativeScanning(false);
+          } else {
+            setNativeScanning(false);
+            setUseWebCamera(true);
+          }
+          return;
+        }
+
+        const result = await bridge.barcodeScanner.waitForResult();
+        if (cancelled || scannedRef.current) return;
+
         if (result.status === 'content') {
           scannedRef.current = true;
           if (navigator.vibrate) navigator.vibrate(100);
           onScan(result.content);
-          return;
-        }
-
-        if (result.status === 'denied') {
-          setPermissionDenied(true);
-          setNativeScanning(false);
           return;
         }
       } catch {
@@ -159,6 +168,7 @@ export function QRScannerCapture({ onScan, onClose }: QRScannerCaptureProps) {
     return () => {
       cancelled = true;
       void bridge.barcodeScanner.stopScan();
+      void bridge.barcodeScanner.endSession();
     };
   }, [onScan, useWebCamera, scanAttempt]);
 
@@ -296,6 +306,13 @@ export function QRScannerCapture({ onScan, onClose }: QRScannerCaptureProps) {
     setTimeout(() => onClose(), 150);
   };
 
+  useEffect(() => {
+    document.documentElement.toggleAttribute("data-scanner-open", true);
+    return () => {
+      document.documentElement.removeAttribute("data-scanner-open");
+    };
+  }, []);
+
   // ── Scan image file ───────────────────────────────────────────
   const handleFileChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -319,12 +336,19 @@ export function QRScannerCapture({ onScan, onClose }: QRScannerCaptureProps) {
   }, [onScan]);
 
   // ── Render ────────────────────────────────────────────────────
-  const showNativeTransparent = previewReady && nativeScanning && !useWebCamera && !permissionDenied;
+  const showNativeTransparent =
+    animPhase === "visible" &&
+    previewReady &&
+    nativeScanning &&
+    !useWebCamera &&
+    !permissionDenied;
   const showLoading = !permissionDenied && !cameraFailed && !previewReady && !cameraReady;
+  const scannerBgClass =
+    animPhase === "leaving" || !showNativeTransparent ? "bg-black" : "bg-transparent";
 
-  return (
+  const scannerUi = (
     <div
-      className={`qr-scanner-ui fixed inset-0 z-50 flex flex-col ${showNativeTransparent ? "bg-transparent" : "bg-black"}`}
+      className={`qr-scanner-ui fixed inset-0 z-50 flex flex-col ${scannerBgClass}`}
       style={{
         transform: animPhase === "visible" ? "none" : "scale(0.96)",
         opacity: animPhase === "visible" ? 1 : 0,
@@ -462,4 +486,6 @@ export function QRScannerCapture({ onScan, onClose }: QRScannerCaptureProps) {
       </div>
     </div>
   );
+
+  return createPortal(scannerUi, document.body);
 }

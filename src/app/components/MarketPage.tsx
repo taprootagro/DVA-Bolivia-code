@@ -265,7 +265,10 @@ export function MarketPage() {
         aria-hidden={currentView.type !== "market"}
       >
           {/* 搜索栏 - 完全固定在顶部，不参与滚动 */}
-          <div className="bg-emerald-600 px-3 py-1.5 z-10 flex-shrink-0">
+          <div
+            className="bg-emerald-600 px-3 pb-1.5 z-10 flex-shrink-0"
+            style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 6px)' }}
+          >
             <div className="flex gap-2 items-center max-w-screen-xl mx-auto">
               <div className="flex-1 min-w-0 bg-white rounded-full px-3 py-1.5 flex items-center gap-2 h-10">
                 <Search className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />

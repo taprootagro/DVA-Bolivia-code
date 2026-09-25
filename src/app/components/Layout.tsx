@@ -328,9 +328,6 @@ export function Layout() {
         height: 'var(--app-height, 100dvh)',
       }}
     >
-      {/* 状态栏占位 — standalone 模式下用 safe-area-inset-top 撇开 */}
-      <div className="bg-emerald-600 safe-top flex-shrink-0" />
-
       {/* 主内容 — Keep-alive: 所有已访问 tab 同存在 DOM 中，用 display 切 */}
       <main className="flex-1 overflow-hidden relative">
         {tabPages.map(({ key, Component }) => {
@@ -347,7 +344,7 @@ export function Layout() {
               key={key}
               className={overflowClass}
               style={{
-                display: isActive ? "block" : "none",
+                display: isActive ? "flex" : "none",
               }}
             >
               <Suspense fallback={TAB_SUSPENSE_FALLBACK[key]}>

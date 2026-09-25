@@ -218,7 +218,7 @@ export function HomePage() {
   }, [config.liveStreams, config.homeIcons?.liveCoverUrl, resolveMedia]);
 
   return (
-    <div ref={homeRootRef} className="min-h-full flex flex-col" style={{ backgroundColor: 'var(--app-bg)' }}>
+    <div ref={homeRootRef} className="h-full min-h-0 flex flex-col" style={{ backgroundColor: 'var(--app-bg)' }}>
       {/* 二级界面路由 */}
       {currentView.type === "banner" && (
         <BannerDetailPage
@@ -264,7 +264,10 @@ export function HomePage() {
         aria-hidden={currentView.type !== "home"}
       >
           {/* 搜索栏 */}
-          <div className="bg-emerald-600 px-3 py-1.5 z-10 shadow-md flex-shrink-0">
+          <div
+            className="bg-emerald-600 px-3 pb-1.5 z-10 shadow-md flex-shrink-0"
+            style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 6px)' }}
+          >
             <div className="flex gap-2 items-center max-w-screen-xl mx-auto">
               <div className="flex-1 min-w-0 bg-white rounded-full px-3 py-1.5 flex items-center gap-2 transition-all duration-300 focus-within:ring-2 focus-within:ring-emerald-300 focus-within:shadow-lg h-10">
                 <Search className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />

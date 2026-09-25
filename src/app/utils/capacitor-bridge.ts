@@ -1546,26 +1546,50 @@ async function restoreBarcodeScannerBackground(BarcodeScanner: any | null) {
   setQrScannerChrome(false);
 }
 
-export const barcodeScanner = {
-  async scan(opts?: { onPreviewReady?: () => void }): Promise<ScanOutcome> {
-    if (!isNative()) return { status: 'unavailable' };
+function loadNativeBarcodeScanner(): any | null {
+  const BarcodeScanner = resolveBarcodeScanner(
+    loadPlugin('@capacitor-community/barcode-scanner'),
+  );
+  if (!BarcodeScanner || typeof BarcodeScanner.startScan !== 'function') {
+    return null;
+  }
+  if (typeof BarcodeScanner.hideBackground !== 'function') {
+    return null;
+  }
+  return BarcodeScanner;
+}
 
-    const mod = loadPlugin('@capacitor-community/barcode-scanner');
-    const BarcodeScanner = resolveBarcodeScanner(mod);
-    if (!BarcodeScanner || typeof BarcodeScanner.startScan !== 'function') {
-      return { status: 'unavailable' };
-    }
-    if (typeof BarcodeScanner.hideBackground !== 'function') {
-      return { status: 'unavailable' };
-    }
+export const barcodeScanner = {
+  async beginSession(opts?: { onPreviewReady?: () => void }): Promise<
+    | { ok: true }
+    | { ok: false; reason: 'unavailable' | 'denied' }
+  > {
+    if (!isNative()) return { ok: false, reason: 'unavailable' };
+
+    const BarcodeScanner = loadNativeBarcodeScanner();
+    if (!BarcodeScanner) return { ok: false, reason: 'unavailable' };
 
     const status = await BarcodeScanner.checkPermission({ force: true });
-    if (!status.granted) return { status: 'denied' };
+    if (!status.granted) return { ok: false, reason: 'denied' };
 
     setQrScannerChrome(true);
     try {
       await BarcodeScanner.hideBackground();
       opts?.onPreviewReady?.();
+    } catch {
+      setQrScannerChrome(false);
+      return { ok: false, reason: 'unavailable' };
+    }
+    return { ok: true };
+  },
+
+  async waitForResult(): Promise<ScanOutcome> {
+    if (!isNative()) return { status: 'unavailable' };
+
+    const BarcodeScanner = loadNativeBarcodeScanner();
+    if (!BarcodeScanner) return { status: 'unavailable' };
+
+    try {
       const result = await BarcodeScanner.startScan();
       if (result.hasContent) {
         return { content: result.content!, format: result.format || 'unknown', status: 'content' };
@@ -1573,8 +1597,32 @@ export const barcodeScanner = {
       return { status: 'empty' };
     } catch {
       return { status: 'failed' };
+    }
+  },
+
+  async endSession(): Promise<void> {
+    if (!isNative()) return;
+    const BarcodeScanner = resolveBarcodeScanner(
+      loadPlugin('@capacitor-community/barcode-scanner'),
+    );
+    try {
+      if (BarcodeScanner && typeof BarcodeScanner.stopScan === 'function') {
+        await BarcodeScanner.stopScan();
+      }
+    } catch { /* ignore */ }
+    await restoreBarcodeScannerBackground(BarcodeScanner);
+  },
+
+  async scan(opts?: { onPreviewReady?: () => void }): Promise<ScanOutcome> {
+    const begin = await this.beginSession(opts);
+    if (!begin.ok) {
+      if (begin.reason === 'denied') return { status: 'denied' };
+      return { status: 'unavailable' };
+    }
+    try {
+      return await this.waitForResult();
     } finally {
-      await restoreBarcodeScannerBackground(BarcodeScanner);
+      await this.endSession();
     }
   },
 
@@ -1588,7 +1636,6 @@ export const barcodeScanner = {
         await BarcodeScanner.stopScan();
       }
     } catch { /* ignore */ }
-    await restoreBarcodeScannerBackground(BarcodeScanner);
   },
 
   async setTorch(on: boolean): Promise<boolean> {

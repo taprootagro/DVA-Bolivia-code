@@ -289,6 +289,11 @@
   }
 
   /* Capacitor SystemBars 注入 --safe-area-inset-*；原生下 body 白底避免手势区露黑 */
+  html[data-native] {
+    --safe-area-inset-top: env(safe-area-inset-top, 0px);
+    --safe-area-inset-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
   html[data-native] body {
     background-color: #ffffff;
   }
@@ -648,15 +653,24 @@ html[data-native] .phone-shell-inner {
  */
 html.qr-scanner-active,
 html.qr-scanner-active body,
-html.qr-scanner-active #root {
+html.qr-scanner-active #root,
+html.qr-scanner-active .phone-shell-inner {
   background: transparent !important;
   background-color: transparent !important;
+}
+html.qr-scanner-active #root {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
 }
 html.qr-scanner-active body {
   visibility: hidden;
 }
 html.qr-scanner-active .qr-scanner-ui {
   visibility: visible;
+}
+html[data-scanner-open] main {
+  visibility: hidden;
 }
 
 /* 直播 feed 嵌入视频（YouTube / Vimeo / B 站） */

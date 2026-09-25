@@ -42,10 +42,45 @@ describe("barcodeScanner", () => {
   });
 
   it("returns unavailable on web", async () => {
-    expect(await barcodeScanner.scan()).toEqual({ status: "unavailable" });
+    expect(await barcodeScanner.beginSession()).toEqual({ ok: false, reason: "unavailable" });
   });
 
-  it("hides WebView background before startScan and restores after", async () => {
+  it("beginSession hides WebView background and sets qr-scanner-active", async () => {
+    const plugin = nativePlugin();
+    const result = await barcodeScanner.beginSession();
+
+    expect(result).toEqual({ ok: true });
+    expect(plugin.hideBackground).toHaveBeenCalled();
+    expect(plugin.startScan).not.toHaveBeenCalled();
+    expect(document.documentElement.classList.contains("qr-scanner-active")).toBe(true);
+  });
+
+  it("waitForResult scans without restoring background", async () => {
+    const plugin = nativePlugin();
+    await barcodeScanner.beginSession();
+    const result = await barcodeScanner.waitForResult();
+
+    expect(plugin.startScan).toHaveBeenCalled();
+    expect(plugin.showBackground).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      status: "content",
+      content: "https://example.com",
+      format: "QR_CODE",
+    });
+    expect(document.documentElement.classList.contains("qr-scanner-active")).toBe(true);
+  });
+
+  it("endSession restores opaque WebView", async () => {
+    const plugin = nativePlugin();
+    await barcodeScanner.beginSession();
+    await barcodeScanner.endSession();
+
+    expect(plugin.stopScan).toHaveBeenCalled();
+    expect(plugin.showBackground).toHaveBeenCalled();
+    expect(document.documentElement.classList.contains("qr-scanner-active")).toBe(false);
+  });
+
+  it("scan() wraps beginSession + waitForResult + endSession", async () => {
     const plugin = nativePlugin();
     const result = await barcodeScanner.scan();
 
@@ -67,8 +102,8 @@ describe("barcodeScanner", () => {
     const plugin = nativePlugin({
       checkPermission: vi.fn(async () => ({ granted: false })),
     });
-    const result = await barcodeScanner.scan();
-    expect(result).toEqual({ status: "denied" });
+    const result = await barcodeScanner.beginSession();
+    expect(result).toEqual({ ok: false, reason: "denied" });
     expect(plugin.hideBackground).not.toHaveBeenCalled();
     expect(plugin.startScan).not.toHaveBeenCalled();
   });
@@ -85,30 +120,31 @@ describe("barcodeScanner", () => {
       }),
     });
 
-    await barcodeScanner.scan({
+    await barcodeScanner.beginSession({
       onPreviewReady: () => {
         order.push("onPreviewReady");
       },
     });
+    await barcodeScanner.waitForResult();
+    await barcodeScanner.endSession();
 
     expect(order).toEqual(["hideBackground", "onPreviewReady", "startScan"]);
-    expect(plugin.hideBackground).toHaveBeenCalled();
     expect(plugin.startScan).toHaveBeenCalled();
   });
 
-  it("skips startScan when hideBackground is missing so the UI can fall back", async () => {
+  it("skips beginSession when hideBackground is missing so the UI can fall back", async () => {
     const plugin = nativePlugin({ hideBackground: undefined });
-    const result = await barcodeScanner.scan();
-    expect(result).toEqual({ status: "unavailable" });
+    const result = await barcodeScanner.beginSession();
+    expect(result).toEqual({ ok: false, reason: "unavailable" });
     expect(plugin.startScan).not.toHaveBeenCalled();
   });
 
-  it("stopScan restores opaque WebView", async () => {
+  it("stopScan cancels native scan without restoring background", async () => {
     const plugin = nativePlugin();
     document.documentElement.classList.add("qr-scanner-active");
     await barcodeScanner.stopScan();
     expect(plugin.stopScan).toHaveBeenCalled();
-    expect(plugin.showBackground).toHaveBeenCalled();
-    expect(document.documentElement.classList.contains("qr-scanner-active")).toBe(false);
+    expect(plugin.showBackground).not.toHaveBeenCalled();
+    expect(document.documentElement.classList.contains("qr-scanner-active")).toBe(true);
   });
 });
