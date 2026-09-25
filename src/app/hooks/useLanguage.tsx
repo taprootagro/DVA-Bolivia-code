@@ -133,6 +133,9 @@ export interface Translations {
     domainVerified?: string;
     domainFailed?: string;
     channelIdLabel?: string;
+    userIdLabel?: string;
+    copyUserId?: string;
+    userIdCopied?: string;
     imProviderLabel?: string;
     bindWarning?: string;
     confirmBind?: string;

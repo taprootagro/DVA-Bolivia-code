@@ -7,21 +7,14 @@ function nativePlugin(overrides: Record<string, unknown> = {}) {
     getPlatform: () => "android",
   };
   const plugin = {
-    checkPermission: vi.fn(async () => ({ granted: true })),
-    hideBackground: vi.fn(async () => undefined),
-    showBackground: vi.fn(async () => undefined),
-    startScan: vi.fn(async () => {
-      expect(document.documentElement.classList.contains("qr-scanner-active")).toBe(true);
-      expect(document.body.classList.contains("qr-scanner-active")).toBe(true);
-      return { hasContent: true, content: "https://example.com", format: "QR_CODE" };
-    }),
-    stopScan: vi.fn(async () => undefined),
-    enableTorch: vi.fn(async () => undefined),
-    disableTorch: vi.fn(async () => undefined),
+    scanBarcode: vi.fn(async () => ({
+      ScanResult: "https://example.com",
+      format: 0,
+    })),
     ...overrides,
   };
   (window as any).__CAP_PLUGINS__ = {
-    "@capacitor-community/barcode-scanner": { BarcodeScanner: plugin },
+    "@capacitor/barcode-scanner": { CapacitorBarcodeScanner: plugin },
   };
   return plugin;
 }
@@ -30,58 +23,63 @@ describe("barcodeScanner", () => {
   beforeEach(() => {
     (window as any).Capacitor = undefined;
     (window as any).__CAP_PLUGINS__ = undefined;
-    document.documentElement.classList.remove("qr-scanner-active");
-    document.body.classList.remove("qr-scanner-active");
   });
 
   afterEach(() => {
     (window as any).Capacitor = undefined;
     (window as any).__CAP_PLUGINS__ = undefined;
-    document.documentElement.classList.remove("qr-scanner-active");
-    document.body.classList.remove("qr-scanner-active");
   });
 
   it("returns unavailable on web", async () => {
     expect(await barcodeScanner.scan()).toEqual({ status: "unavailable" });
   });
 
-  it("hides WebView background before startScan and restores after", async () => {
+  it("opens native scanner and returns decoded content", async () => {
     const plugin = nativePlugin();
     const result = await barcodeScanner.scan();
 
-    expect(plugin.hideBackground).toHaveBeenCalled();
-    expect(plugin.startScan).toHaveBeenCalled();
-    expect(plugin.hideBackground.mock.invocationCallOrder[0]).toBeLessThan(
-      plugin.startScan.mock.invocationCallOrder[0],
-    );
-    expect(plugin.showBackground).toHaveBeenCalled();
+    expect(plugin.scanBarcode).toHaveBeenCalledWith({
+      hint: 0,
+      scanButton: false,
+      scanInstructions: " ",
+      scanText: " ",
+      cameraDirection: 1,
+      scanOrientation: 3,
+      android: { scanningLibrary: "mlkit" },
+    });
     expect(result).toEqual({
       status: "content",
       content: "https://example.com",
-      format: "QR_CODE",
+      format: "0",
     });
-    expect(document.documentElement.classList.contains("qr-scanner-active")).toBe(false);
   });
 
-  it("returns denied without hideBackground when permission is rejected", async () => {
-    const plugin = nativePlugin({
-      checkPermission: vi.fn(async () => ({ granted: false })),
+  it("returns denied when native scanner reports permission error", async () => {
+    nativePlugin({
+      scanBarcode: vi.fn(async () => {
+        throw new Error("Camera permission denied");
+      }),
     });
     const result = await barcodeScanner.scan();
     expect(result).toEqual({ status: "denied" });
-    expect(plugin.hideBackground).not.toHaveBeenCalled();
-    expect(plugin.startScan).not.toHaveBeenCalled();
   });
 
-  it("calls onPreviewReady after hideBackground and before startScan", async () => {
+  it("returns empty when user cancels native scanner", async () => {
+    nativePlugin({
+      scanBarcode: vi.fn(async () => {
+        throw new Error("User cancelled scan");
+      }),
+    });
+    const result = await barcodeScanner.scan();
+    expect(result).toEqual({ status: "empty" });
+  });
+
+  it("calls onPreviewReady before scanBarcode", async () => {
     const order: string[] = [];
     const plugin = nativePlugin({
-      hideBackground: vi.fn(async () => {
-        order.push("hideBackground");
-      }),
-      startScan: vi.fn(async () => {
-        order.push("startScan");
-        return { hasContent: false };
+      scanBarcode: vi.fn(async () => {
+        order.push("scanBarcode");
+        return { ScanResult: "", format: 0 };
       }),
     });
 
@@ -91,24 +89,28 @@ describe("barcodeScanner", () => {
       },
     });
 
-    expect(order).toEqual(["hideBackground", "onPreviewReady", "startScan"]);
-    expect(plugin.hideBackground).toHaveBeenCalled();
-    expect(plugin.startScan).toHaveBeenCalled();
+    expect(order).toEqual(["onPreviewReady", "scanBarcode"]);
+    expect(plugin.scanBarcode).toHaveBeenCalled();
   });
 
-  it("skips startScan when hideBackground is missing so the UI can fall back", async () => {
-    const plugin = nativePlugin({ hideBackground: undefined });
+  it("returns unavailable when scanBarcode is missing", async () => {
+    (window as any).Capacitor = {
+      isNativePlatform: () => true,
+      getPlatform: () => "android",
+    };
+    (window as any).__CAP_PLUGINS__ = {
+      "@capacitor/barcode-scanner": { CapacitorBarcodeScanner: {} },
+    };
     const result = await barcodeScanner.scan();
     expect(result).toEqual({ status: "unavailable" });
-    expect(plugin.startScan).not.toHaveBeenCalled();
   });
 
-  it("stopScan restores opaque WebView", async () => {
-    const plugin = nativePlugin();
-    document.documentElement.classList.add("qr-scanner-active");
-    await barcodeScanner.stopScan();
-    expect(plugin.stopScan).toHaveBeenCalled();
-    expect(plugin.showBackground).toHaveBeenCalled();
-    expect(document.documentElement.classList.contains("qr-scanner-active")).toBe(false);
+  it("stopScan is a no-op for official plugin", async () => {
+    await expect(barcodeScanner.stopScan()).resolves.toBeUndefined();
+  });
+
+  it("setTorch returns false (native UI handles torch)", async () => {
+    nativePlugin();
+    expect(await barcodeScanner.setTorch(true)).toBe(false);
   });
 });

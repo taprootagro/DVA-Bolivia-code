@@ -1181,17 +1181,23 @@ export const navigationBar = {
   },
 };
 
-/** 原生启动时同步顶部状态栏 + 底部手势条颜色（避免 Android 默认黑条） */
+/**
+ * 沉浸式系统栏：内容铺到栏后，只改图标颜色。
+ * 不调用 setStatusBarColor / setNavigationBarColor（Android 15+ 已弃用，Play 会拒）。
+ * 顶栏在绿色背景上用浅色图标，底栏在白色背景上用深色图标。
+ */
 export async function applyNativeSystemChrome(): Promise<void> {
   if (!isNative()) return;
   try {
-    await statusBar.setBackgroundColor('#059669');
-    await statusBar.setStyle('dark');
-  } catch {
-    /* non-fatal */
-  }
-  try {
-    await navigationBar.setColor('#FFFFFF', true);
+    const { SystemBars, SystemBarsStyle, SystemBarType } = await import('@capacitor/core');
+    await SystemBars.setStyle({
+      style: SystemBarsStyle.Dark,
+      bar: SystemBarType.StatusBar,
+    });
+    await SystemBars.setStyle({
+      style: SystemBarsStyle.Light,
+      bar: SystemBarType.NavigationBar,
+    });
   } catch {
     /* non-fatal */
   }
@@ -1509,10 +1515,8 @@ export const toast = {
 // ============================================================================
 
 // ── 二维码扫描 ───────────────────────────────────────────────────────────
-// @capacitor-community/barcode-scanner 把相机预览画在 WebView 后面。
-// 必须 hideBackground + 把页面做成透明，否则用户只看到黑屏转圈，
-// 而 startScan() 会一直等到扫到码才 resolve。
-const QR_SCANNER_ACTIVE_CLASS = 'qr-scanner-active';
+// @capacitor/barcode-scanner 使用原生全屏扫码 UI（CameraX/MLKit），不含 ioncamera。
+const QR_CODE_HINT = 0;
 
 export type ScanOutcome =
   | { status: 'content'; content: string; format: string }
@@ -1522,86 +1526,65 @@ export type ScanOutcome =
   | { status: 'failed' };
 
 function resolveBarcodeScanner(mod: any): any | null {
-  return mod?.BarcodeScanner ?? mod?.default?.BarcodeScanner ?? null;
+  return mod?.CapacitorBarcodeScanner ?? mod?.default?.CapacitorBarcodeScanner ?? null;
 }
 
-function setQrScannerChrome(active: boolean) {
-  if (typeof document === 'undefined') return;
-  document.documentElement.classList.toggle(QR_SCANNER_ACTIVE_CLASS, active);
-  document.body.classList.toggle(QR_SCANNER_ACTIVE_CLASS, active);
-}
-
-async function restoreBarcodeScannerBackground(BarcodeScanner: any | null) {
-  try {
-    if (BarcodeScanner && typeof BarcodeScanner.showBackground === 'function') {
-      await BarcodeScanner.showBackground();
-    }
-  } catch { /* ignore */ }
-  setQrScannerChrome(false);
+function mapBarcodeScanError(error: unknown): ScanOutcome {
+  const msg = String(
+    (error as { message?: string; errorMessage?: string })?.message
+    ?? (error as { errorMessage?: string })?.errorMessage
+    ?? error
+    ?? '',
+  ).toLowerCase();
+  if (msg.includes('permission') || msg.includes('denied') || msg.includes('not authorized')) {
+    return { status: 'denied' };
+  }
+  if (msg.includes('cancel') || msg.includes('dismiss')) {
+    return { status: 'empty' };
+  }
+  return { status: 'failed' };
 }
 
 export const barcodeScanner = {
   async scan(opts?: { onPreviewReady?: () => void }): Promise<ScanOutcome> {
     if (!isNative()) return { status: 'unavailable' };
 
-    const mod = loadPlugin('@capacitor-community/barcode-scanner');
-    const BarcodeScanner = resolveBarcodeScanner(mod);
-    if (!BarcodeScanner || typeof BarcodeScanner.startScan !== 'function') {
-      return { status: 'unavailable' };
-    }
-    // hideBackground 缺失时不要挂起 startScan：相机会在不透明 WebView 后空转
-    if (typeof BarcodeScanner.hideBackground !== 'function') {
+    const Scanner = resolveBarcodeScanner(loadPlugin('@capacitor/barcode-scanner'));
+    if (!Scanner || typeof Scanner.scanBarcode !== 'function') {
       return { status: 'unavailable' };
     }
 
-    const status = await BarcodeScanner.checkPermission({ force: true });
-    if (!status.granted) return { status: 'denied' };
-
-    setQrScannerChrome(true);
+    opts?.onPreviewReady?.();
     try {
-      await BarcodeScanner.hideBackground();
-      opts?.onPreviewReady?.();
-      const result = await BarcodeScanner.startScan();
-      if (result.hasContent) {
-        return { content: result.content!, format: result.format || 'unknown', status: 'content' };
+      const result = await Scanner.scanBarcode({
+        hint: QR_CODE_HINT,
+        scanButton: false,
+        scanInstructions: ' ',
+        scanText: ' ',
+        cameraDirection: 1,
+        scanOrientation: 3,
+        android: { scanningLibrary: 'mlkit' },
+      });
+      const content = result?.ScanResult?.trim();
+      if (content) {
+        return {
+          status: 'content',
+          content,
+          format: String(result.format ?? 'QR_CODE'),
+        };
       }
       return { status: 'empty' };
-    } catch {
-      return { status: 'failed' };
-    } finally {
-      await restoreBarcodeScannerBackground(BarcodeScanner);
+    } catch (error) {
+      return mapBarcodeScanError(error);
     }
   },
 
   async stopScan(): Promise<void> {
-    if (!isNative()) return;
-    const BarcodeScanner = resolveBarcodeScanner(
-      loadPlugin('@capacitor-community/barcode-scanner'),
-    );
-    try {
-      if (BarcodeScanner && typeof BarcodeScanner.stopScan === 'function') {
-        await BarcodeScanner.stopScan();
-      }
-    } catch { /* ignore */ }
-    await restoreBarcodeScannerBackground(BarcodeScanner);
+    // 官方全屏扫码由原生 UI 关闭；JS 侧无需 stop。
   },
 
-  async setTorch(on: boolean): Promise<boolean> {
-    if (!isNative()) return false;
-    const BarcodeScanner = resolveBarcodeScanner(
-      loadPlugin('@capacitor-community/barcode-scanner'),
-    );
-    if (!BarcodeScanner) return false;
-    try {
-      if (on && typeof BarcodeScanner.enableTorch === 'function') {
-        await BarcodeScanner.enableTorch();
-        return true;
-      }
-      if (!on && typeof BarcodeScanner.disableTorch === 'function') {
-        await BarcodeScanner.disableTorch();
-        return true;
-      }
-    } catch { /* ignore */ }
+  async setTorch(_on: boolean): Promise<boolean> {
+    // 手电筒由原生扫码界面自带按钮控制。
     return false;
   },
 };

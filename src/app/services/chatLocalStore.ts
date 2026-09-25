@@ -306,7 +306,12 @@ export async function fetchAndCacheMedia(
   const cached = await getMediaBlob(url);
   if (cached) return cached;
   try {
-    const r = await fetch(url, { signal, credentials: "omit" });
+    const r = await fetch(url, {
+      signal,
+      credentials: "omit",
+      // Google 头像（lh3.googleusercontent.com）带 Referer 会 403
+      referrerPolicy: "no-referrer",
+    });
     if (!r.ok) return null;
     const blob = await r.blob();
     // 过大的单个文件（> 20MB）跳过缓存，避免单条把整个配额吃光

@@ -95,6 +95,7 @@ interface RecentRowProps {
   title: string;
   subtitle: string;
   avatar: string;
+  userId?: string;
   unread: number;
   lastMessageAt: number;
   blocked?: boolean;
@@ -130,6 +131,7 @@ function RecentRow({
   title,
   subtitle,
   avatar,
+  userId,
   unread,
   lastMessageAt,
   blocked,
@@ -162,7 +164,7 @@ function RecentRow({
       onPointerLeave={clearTimer}
       onPointerCancel={clearTimer}
     >
-      <ChatPeerAvatar avatar={avatar} size="lg" />
+      <ChatPeerAvatar avatar={avatar} userId={userId} size="lg" />
       <div className="flex-1 min-w-0">
         <div className="flex items-center justify-between gap-2">
           <span
@@ -226,7 +228,7 @@ function ContactRow({ peer, displayName, blocked, blockedLabel, onPress, onLongP
       onPointerLeave={clearTimer}
       onPointerCancel={clearTimer}
     >
-      <ChatPeerAvatar avatar={peer.avatar} size="md" />
+      <ChatPeerAvatar avatar={peer.avatar} userId={peer.imUserId} size="md" />
       <div className="flex-1 min-w-0">
         <p className="font-medium text-gray-900 truncate">{displayName}</p>
         <p className={`text-xs truncate ${blocked ? "text-amber-700/90" : "text-gray-500"}`}>
@@ -395,7 +397,7 @@ function StoreThreadPanel({ peer, storeUserId, onRefreshShell }: StoreThreadPane
       {/* 与首页搜索条同节奏：emerald-600 + px-3 py-1.5 + h-10 内容行，无底部圆角 */}
       <div className="bg-emerald-600 px-3 py-1.5 flex-shrink-0 shadow-md safe-top">
         <div className="flex h-10 items-center gap-2">
-          <ChatPeerAvatar avatar={peer.avatar} size="sm" className="ring-1 ring-white/40" />
+          <ChatPeerAvatar avatar={peer.avatar} userId={peer.imUserId} size="sm" className="ring-1 ring-white/40" />
           <div className="flex-1 min-w-0">
             <h2 className="text-white font-semibold text-sm leading-tight truncate">{peerLabel}</h2>
             <p className="text-white/85 text-[11px] leading-tight truncate">
@@ -924,6 +926,7 @@ export function StoreCommunityShell({ storeUserId }: { storeUserId: string }) {
                   title={title}
                   subtitle={subtitle}
                   avatar={avatar}
+                  userId={peer?.imUserId}
                   unread={recent.unread}
                   lastMessageAt={recent.lastMessageAt}
                   blocked={blocked}

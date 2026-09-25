@@ -412,7 +412,7 @@ function CommunityChat() {
         <div className="flex items-center gap-3">
           <button className="flex-shrink-0 active:opacity-80 transition-all active:scale-95">
             <div className="relative">
-              <ChatPeerAvatar avatar={contact.avatar} size="lg" className="ring-2 ring-white shadow-xl" />
+              <ChatPeerAvatar avatar={contact.avatar} userId={contact.imUserId} size="lg" className="ring-2 ring-white shadow-xl" />
               {contact.online && (
                 <div className={`absolute -bottom-0.5 ${isRTL ? '-left-0.5' : '-right-0.5'}`}>
                   <div className="relative">

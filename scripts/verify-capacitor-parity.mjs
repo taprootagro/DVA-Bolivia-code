@@ -9,13 +9,20 @@ import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const bridgePath = resolve(root, 'src/app/utils/capacitor-bridge.ts');
-const builderPath = resolve(root, 'farmer-developer/TaprootAgro Android Builder.yml');
+const builderPaths = [
+  resolve(root, 'farmer-developer/TaprootAgro Android Builder.yml'),
+  resolve(root, 'farmer-developer/Fast Android Builder.yml'),
+];
 
 const OPTIONAL_PLUGINS = new Set([
   '@capacitor-community/wechat',
   '@capacitor-community/alipay',
   '@capacitor-community/line-login',
   'capacitor-plugin-jpush',
+  // Omitted from Android Builder for Google Play compliance (edge-to-edge / large screen)
+  '@capacitor/status-bar',
+  '@capgo/capacitor-navigation-bar',
+  '@capacitor/screen-orientation',
 ]);
 
 function extractBridgePlugins(src) {
@@ -47,19 +54,22 @@ function extractBuilderPlugins(src) {
 const bridgeSrc = readFileSync(bridgePath, 'utf8');
 const bridgePlugins = extractBridgePlugins(bridgeSrc);
 
-if (!existsSync(builderPath)) {
-  console.error('Builder workflow not found:', builderPath);
-  process.exit(1);
+let failed = false;
+const builderPluginsUnion = new Set();
+
+for (const builderPath of builderPaths) {
+  if (!existsSync(builderPath)) {
+    console.error('Builder workflow not found:', builderPath);
+    process.exit(1);
+  }
+  const builderSrc = readFileSync(builderPath, 'utf8');
+  for (const k of extractBuilderPlugins(builderSrc)) builderPluginsUnion.add(k);
 }
-const builderSrc = readFileSync(builderPath, 'utf8');
-const builderPlugins = extractBuilderPlugins(builderSrc);
 
 const missingInBuilder = [...bridgePlugins].filter(
-  (k) => !builderPlugins.has(k) && !OPTIONAL_PLUGINS.has(k),
+  (k) => !builderPluginsUnion.has(k) && !OPTIONAL_PLUGINS.has(k),
 );
-const extraInBuilder = [...builderPlugins].filter((k) => !bridgePlugins.has(k));
-
-let failed = false;
+const extraInBuilder = [...builderPluginsUnion].filter((k) => !bridgePlugins.has(k));
 
 if (missingInBuilder.length) {
   failed = true;
@@ -82,4 +92,4 @@ if (failed) {
   process.exit(1);
 }
 
-console.log(`Capacitor parity OK — ${bridgePlugins.size} bridge plugins, ${builderPlugins.size} in Builder template.`);
+console.log(`Capacitor parity OK — ${bridgePlugins.size} bridge plugins, ${builderPluginsUnion.size} in Builder template(s).`);
