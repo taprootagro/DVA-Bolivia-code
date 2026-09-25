@@ -336,7 +336,8 @@ export function Layout() {
           if (!isMounted) return null;
           // community 页面有自己的内部滚动，外层用 overflow-hidden
           // 防止 iOS 聚焦 input 时滚动外层容器导致页面跳顶
-          const overflowClass = key === "community" || key === "home" || key === "market"
+          const columnTab = key === "community" || key === "home" || key === "market";
+          const overflowClass = columnTab
             ? "absolute inset-0 overflow-hidden flex flex-col min-h-0"
             : "absolute inset-0 overflow-y-auto overflow-x-hidden";
           return (
@@ -344,7 +345,8 @@ export function Layout() {
               key={key}
               className={overflowClass}
               style={{
-                display: isActive ? "flex" : "none",
+                // 个人页等内容页必须 block。横向 flex 会把子节点宽度压成 0，整页缩到左上角。
+                display: isActive ? (columnTab ? "flex" : "block") : "none",
               }}
             >
               <Suspense fallback={TAB_SUSPENSE_FALLBACK[key]}>

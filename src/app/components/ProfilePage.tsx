@@ -261,7 +261,7 @@ export function ProfilePage() {
   // 未登录
   if (!isLoggedIn) {
     return (
-      <div className="pb-safe-nav min-h-full relative" style={{ backgroundColor: 'var(--app-bg)' }}>
+      <div className="pb-safe-nav min-h-full w-full relative" style={{ backgroundColor: 'var(--app-bg)' }}>
         <div className="absolute top-0 left-0 right-0 h-60 bg-emerald-600 rounded-b-3xl shadow-lg">
           <div className="absolute top-8 ltr:right-8 rtl:left-8 w-20 h-20 bg-white/10 rounded-full blur-2xl"></div>
           <div className="absolute bottom-8 ltr:left-8 rtl:right-8 w-24 h-24 bg-white/10 rounded-full blur-3xl"></div>
@@ -311,7 +311,7 @@ export function ProfilePage() {
 
   // 已登录
   return (
-    <div className="pb-safe-nav min-h-full" style={{ backgroundColor: 'var(--app-bg)' }}>
+    <div className="pb-safe-nav min-h-full w-full" style={{ backgroundColor: 'var(--app-bg)' }}>
       {profileCooldownToast ? (
         <div className="fixed top-20 left-1/2 -translate-x-1/2 z-[999] bg-gray-800 text-white text-sm px-4 py-2 rounded-full shadow-lg max-w-[90vw] text-center">
           {profileCooldownToast}
