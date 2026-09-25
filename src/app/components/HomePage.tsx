@@ -99,6 +99,7 @@ export function HomePage() {
 
   const hasResults = searchResults.products.length > 0 || searchResults.articles.length > 0;
   const isSearching = searchQuery.trim().length > 0;
+  const searchModeActive = isSearching || searchFocused;
 
   // 点击搜索结果后清空搜索并关闭
   const clearSearch = useCallback(() => {
@@ -217,7 +218,7 @@ export function HomePage() {
   }, [config.liveStreams, config.homeIcons?.liveCoverUrl, resolveMedia]);
 
   return (
-    <div ref={homeRootRef} className="min-h-screen" style={{ backgroundColor: 'var(--app-bg)' }}>
+    <div ref={homeRootRef} className="min-h-full flex flex-col" style={{ backgroundColor: 'var(--app-bg)' }}>
       {/* 二级界面路由 */}
       {currentView.type === "banner" && (
         <BannerDetailPage
@@ -259,11 +260,11 @@ export function HomePage() {
 
       {/* 首页内容：勿在二级页时卸载 — 否则关闭后整树重挂，LazyImage 从占位重新渐入，看起来像缩略图全量重载 */}
       <div
-        className={currentView.type === "home" ? undefined : "hidden"}
+        className={currentView.type === "home" ? "flex flex-col flex-1 min-h-0" : "hidden"}
         aria-hidden={currentView.type !== "home"}
       >
           {/* 搜索栏 */}
-          <div className="bg-emerald-600 px-3 py-1.5 sticky top-0 z-10 shadow-md">
+          <div className="bg-emerald-600 px-3 py-1.5 z-10 shadow-md flex-shrink-0">
             <div className="flex gap-2 items-center max-w-screen-xl mx-auto">
               <div className="flex-1 min-w-0 bg-white rounded-full px-3 py-1.5 flex items-center gap-2 transition-all duration-300 focus-within:ring-2 focus-within:ring-emerald-300 focus-within:shadow-lg h-10">
                 <Search className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
@@ -310,16 +311,16 @@ export function HomePage() {
             </div>
           </div>
 
-          {/* 搜索结果面板 — 覆盖主内容 */}
-          {isSearching && (
-            <div className="px-3 pb-safe-nav max-w-screen-xl mx-auto">
-              {!hasResults ? (
+          {/* 搜索面板 — 聚焦或输入时占满剩余高度，避免键盘上方出现大块空白 */}
+          {searchModeActive && (
+            <div className="flex-1 min-h-0 overflow-y-auto px-3 max-w-screen-xl mx-auto w-full">
+              {isSearching && !hasResults ? (
                 <div className="text-center py-16">
                   <Search className="w-10 h-10 text-gray-300 mx-auto mb-3" />
                   <p className="text-sm text-gray-400">{t.common.noResults || "No results found"}</p>
                 </div>
-              ) : (
-                <div className="space-y-4 pt-3">
+              ) : isSearching ? (
+                <div className="space-y-4 pt-3 pb-3">
                   {/* 商品搜索结果 */}
                   {searchResults.products.length > 0 && (
                     <div>
@@ -397,12 +398,20 @@ export function HomePage() {
                     </div>
                   )}
                 </div>
+              ) : (
+                <div className="text-center py-16">
+                  <Search className="w-10 h-10 text-gray-300 mx-auto mb-3" />
+                  <p className="text-sm text-gray-400">{t.home.searchPlaceholder}</p>
+                </div>
               )}
             </div>
           )}
 
-          {/* 主内容区域 - 搜索时隐藏，增加底部内边距避免被底部导航遮挡 */}
-          <div className="px-3 space-y-3 max-w-screen-xl mx-auto pb-safe-nav" style={{ display: isSearching ? 'none' : undefined }}>
+          {/* 主内容区域 - 搜索模式时隐藏，增加底部内边距避免被底部导航遮挡 */}
+          <div
+            className="px-3 space-y-3 max-w-screen-xl mx-auto pb-safe-nav flex-1 min-h-0 overflow-y-auto"
+            style={{ display: searchModeActive ? 'none' : undefined }}
+          >
             {/* 轮播图 — 使用网络感知优化后图片 URL */}
             <div 
               className="mt-3 rounded-2xl overflow-hidden bg-gray-100 relative active:scale-95 transition-transform cursor-pointer aspect-[2/1] shadow-lg"

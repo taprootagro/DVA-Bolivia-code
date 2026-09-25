@@ -642,8 +642,9 @@ html[data-native] .phone-shell-inner {
 }
 
 /*
- * Legacy QR scanner overlay (community plugin transparent WebView mode).
- * Kept for backward compatibility; official @capacitor/barcode-scanner uses native fullscreen UI.
+ * Native QR scanner (@capacitor-community/barcode-scanner):
+ * camera preview is behind the WebView. Hide app chrome and punch
+ * a transparent hole so the preview is visible.
  */
 html.qr-scanner-active,
 html.qr-scanner-active body,
