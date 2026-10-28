@@ -28,7 +28,7 @@ interface ChatInputBarProps {
   readOnly?: boolean;
 }
 
-const WAVE_HEIGHTS = Array.from({ length: 6 }, () => 6 + Math.random() * 10);
+const WAVE_HEIGHTS = [8, 14, 10, 16, 9, 13];
 
 export const ChatInputBar = React.memo(function ChatInputBar({
   onSendText,

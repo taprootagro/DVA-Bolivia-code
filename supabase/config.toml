@@ -9,8 +9,8 @@ verify_jwt = false
 
 [functions.ai-vision-proxy]
 entrypoint = "./functions/ai-vision-proxy/index.tsx"
-# 允许免登录 AI（函数内按 app_config.allowUnauthenticatedUse + IP 限流）；已登录用户仍校验 JWT
-verify_jwt = false
+# 与 ops/deploy/deploy.sh 一致：网关校验 JWT；函数内 extractUserJwt + getAuthUserId 二次校验
+verify_jwt = true
 
 [functions.chat-supabase]
 entrypoint = "./functions/chat-supabase/index.tsx"

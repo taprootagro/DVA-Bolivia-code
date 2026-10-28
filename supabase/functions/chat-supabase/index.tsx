@@ -10,20 +10,25 @@
 //   - 可选 CHAT_RELAX_CHANNEL_AUTH=true（仅开发/内网）：已登录即可访问任意 channel（勿用于公网）
 //   - POST /messages/delete：需 Authorization 用户 JWT + 同上频道权限
 //   - 可选 CHAT_DELETE_SECRET：若设置，请求头 X-Chat-Delete-Secret 与其一致时可删任意 channel（运维脚本）或 POST /admin/purge-old（按保留天数清理 chat_messages + chat-media）
-//   - 云端保留窗口：默认 3 天（CHAT_RETENTION_DAYS / POST /admin/purge-old body.days 可覆盖；
+//   - 云端保留窗口：默认 7 天（CHAT_RETENTION_DAYS / POST /admin/purge-old body.days 可覆盖；
 //     与 migrations/001_init.sql 中 pg_cron 任务对齐）；客户端 IndexedDB（chatLocalStore）长期保留
 //
 // POST /messages     JSON { channel_id, sender_id(忽略), msg_type, body?, media_url?, duration_ms? }
 //                    写入成功后向 Realtime 频道 chat:{channel_id} 发 broadcast(event=message, payload=inserted)
 // GET  /messages     ?channel_id=&limit=50&before=<iso>
 //                    或 ?channel_id=&since=<iso>&limit=200：created_at > since 升序返回（断线重连增量补拉）
+// GET  /inbox        ?since=<iso>&limit=200：当前用户全部会话中 since 之后的消息（门店收件箱补拉）
 // POST /messages/delete  JSON { channel_id }
 // POST /admin/purge-old  JSON { days?=1, includeStorage?=true } — 需 X-Chat-Delete-Secret（同 CHAT_DELETE_SECRET），无用户 JWT。默认 1 天 + 同时清 Storage（与 pg_cron 行为一致）
 // POST /upload       multipart: file, channel_id, sender_id(忽略), kind=image|voice|video
 //                    [LEGACY] 媒体经 Edge 代理。新客户端走 /upload/sign + 直传 Storage。
 // POST /upload/sign  JSON { channel_id, kind=image|voice|video, ext } →
-//                    { uploadUrl, token, objectPath, publicUrl }
+//                    { uploadUrl, token, objectPath, publicUrl, readUrl?, private? }
 //                    客户端直传 Storage：PUT uploadUrl，header x-upsert: false。
+//                    CHAT_MEDIA_PRIVATE=true 时 publicUrl 为对象路径（非公开 https），
+//                    读侧由下方签名接口 / 列表包装换成 1h signed URL。
+// GET  /media/sign   ?path=<channelId/filename> → { signedUrl, path, expiresIn }
+//                    仅频道参与者；灰度私有桶后客户端刷新过期媒体用。
 //
 // 环境：SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY
 // 推送分发（写库成功后内联 dispatchPushFromChat，见 ../_shared/push.ts）：
@@ -31,6 +36,8 @@
 //   FCM v1:   FCM_SERVICE_ACCOUNT_JSON（project_id 从 JSON 中自动提取）
 //   可选开关: CHAT_INLINE_PUSH=false（禁用内联推送；通常不需要）
 // 可选：CHAT_RELAX_CHANNEL_AUTH, CHAT_DELETE_SECRET, CHAT_RETENTION_DAYS,
+//       CHAT_MEDIA_PRIVATE — "true"/"1"/"yes" 时 chat-media 按私有桶处理（写路径、读签名 URL）。
+//         打开后须先部署本函数与前端，再在 SQL Editor 把 bucket 改为 public=false 并 DROP 公开读策略。
 //       CHAT_INSECURE_OPEN_READ — "true" 时：GET /messages 放宽为「channel 已在 merchant_farmer_channels
 //       登记则任意已登录用户可读」（旧行为，依赖 channel_id 保密）。默认不设置 = 仅绑定双方可读。
 //       （已弃用：CHAT_STRICT_BOUND_CHANNEL_READ，请改用默认严格读或本变量。）
@@ -256,6 +263,61 @@ async function enforceUploadSignRateLimit(
 }
 
 /** 当前用户是否为该 channel 在 merchant_farmer_channels 中的商户或农户（唯一合法参与者）。 */
+const CHAT_MSG_SELECT =
+  "id, channel_id, sender_id, msg_type, body, media_url, duration_ms, created_at, client_msg_id";
+
+async function getChannelRow(
+  admin: SupabaseClient,
+  channelId: string,
+): Promise<{ merchant_user_id: string; farmer_user_id: string } | null> {
+  const { data } = await admin
+    .from("merchant_farmer_channels")
+    .select("merchant_user_id, farmer_user_id")
+    .eq("channel_id", channelId)
+    .maybeSingle();
+  return data ?? null;
+}
+
+/** 除发送方外的会话参与者 user id（用于 inbox 广播）。 */
+function recipientUserIdsForMessage(
+  row: { merchant_user_id: string; farmer_user_id: string },
+  senderId: string,
+): string[] {
+  const me = senderId.trim().toLowerCase();
+  const out: string[] = [];
+  const merchant = String(row.merchant_user_id || "").trim();
+  const farmer = String(row.farmer_user_id || "").trim();
+  if (merchant && merchant.toLowerCase() !== me) out.push(merchant);
+  if (farmer && farmer.toLowerCase() !== me) out.push(farmer);
+  return out;
+}
+
+async function listChannelIdsForUser(
+  admin: SupabaseClient,
+  userId: string,
+): Promise<string[]> {
+  const uid = userId.trim();
+  const farmerKey = uid.toLowerCase();
+  const ids = new Set<string>();
+  const { data: asMerchant } = await admin
+    .from("merchant_farmer_channels")
+    .select("channel_id")
+    .eq("merchant_user_id", uid);
+  for (const r of asMerchant || []) {
+    const c = String(r.channel_id || "").trim();
+    if (c) ids.add(c);
+  }
+  const { data: asFarmer } = await admin
+    .from("merchant_farmer_channels")
+    .select("channel_id")
+    .eq("farmer_user_id", farmerKey);
+  for (const r of asFarmer || []) {
+    const c = String(r.channel_id || "").trim();
+    if (c) ids.add(c);
+  }
+  return [...ids];
+}
+
 async function isChannelMember(
   admin: SupabaseClient,
   channelId: string,
@@ -332,24 +394,82 @@ function sanitizeChannelIdForStorage(channelId: string): string {
   return channelId.replace(/[^a-zA-Z0-9_-]/g, "_");
 }
 
-/** 非文本消息的 media_url 必须指向本 channel 的 chat-media 公开路径 */
-function isValidChatMediaUrl(mediaUrl: string, channelId: string): boolean {
+function chatMediaPrivate(): boolean {
+  const v = (Deno.env.get("CHAT_MEDIA_PRIVATE") || "").trim().toLowerCase();
+  return v === "1" || v === "true" || v === "yes";
+}
+
+function chatMediaObjectPath(mediaUrl: string, channelId: string): string | null {
   const trimmed = mediaUrl.trim();
-  if (!trimmed || !channelId.trim()) return false;
+  if (!trimmed || !channelId.trim()) return null;
   const sanitized = sanitizeChannelIdForStorage(channelId);
+  const prefix = `${sanitized}/`;
+  if (!trimmed.includes("://") && !trimmed.startsWith("/")) {
+    if (!trimmed.startsWith(prefix)) return null;
+    const after = trimmed.slice(prefix.length);
+    if (!after || after.includes("..") || after.includes("/")) return null;
+    return trimmed;
+  }
   const requiredSegment = `/storage/v1/object/public/chat-media/${sanitized}/`;
   try {
     const parsed = trimmed.startsWith("http")
       ? new URL(trimmed)
       : new URL(trimmed, "https://local.invalid");
     const idx = parsed.pathname.indexOf(requiredSegment);
-    if (idx < 0) return false;
+    if (idx < 0) return null;
     const after = parsed.pathname.slice(idx + requiredSegment.length);
-    if (!after || after.includes("..") || after.startsWith("/")) return false;
-    return true;
+    if (!after || after.includes("..") || after.startsWith("/")) return null;
+    return `${sanitized}/${after}`;
   } catch {
-    return false;
+    return null;
   }
+}
+
+/** 非文本消息的 media_url 必须是本 channel 的 chat-media 公开 URL 或 object path。 */
+function isValidChatMediaUrl(mediaUrl: string, channelId: string): boolean {
+  return chatMediaObjectPath(mediaUrl, channelId) != null;
+}
+
+function persistMediaRef(mediaUrl: string, channelId: string): string {
+  const path = chatMediaObjectPath(mediaUrl, channelId);
+  if (chatMediaPrivate() && path) return path;
+  return mediaUrl.trim();
+}
+
+async function signedChatMediaUrl(
+  admin: ReturnType<typeof adminClient>,
+  objectPath: string,
+): Promise<string | null> {
+  const { data, error } = await admin.storage
+    .from("chat-media")
+    .createSignedUrl(objectPath, 3600);
+  if (error || !data?.signedUrl) {
+    console.warn("[chat-supabase] createSignedUrl", error);
+    return null;
+  }
+  return data.signedUrl;
+}
+
+async function withSignedMedia<T extends Record<string, unknown>>(
+  admin: ReturnType<typeof adminClient>,
+  row: T,
+): Promise<T> {
+  if (!chatMediaPrivate()) return row;
+  const mediaUrl = typeof row.media_url === "string" ? row.media_url : "";
+  const channelId = typeof row.channel_id === "string" ? row.channel_id : "";
+  const path = mediaUrl ? chatMediaObjectPath(mediaUrl, channelId) : null;
+  if (!path) return row;
+  const signed = await signedChatMediaUrl(admin, path);
+  if (!signed) return row;
+  return { ...row, media_url: signed, media_path: path };
+}
+
+async function withSignedMediaList<T extends Record<string, unknown>>(
+  admin: ReturnType<typeof adminClient>,
+  rows: T[],
+): Promise<T[]> {
+  if (!chatMediaPrivate() || rows.length === 0) return rows;
+  return await Promise.all(rows.map((r) => withSignedMedia(admin, r)));
 }
 
 function chatRlFailClosed(): boolean {
@@ -364,10 +484,21 @@ function chatRlFailClosed(): boolean {
 async function broadcastChatMessage(
   channelId: string,
   inserted: unknown,
+  inboxRecipientIds: string[],
 ): Promise<void> {
   const url = (Deno.env.get("SUPABASE_URL") || "").replace(/\/$/, "");
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   if (!url || !serviceKey) return;
+  const chatTopic = `chat:${channelId}`;
+  const messages: Record<string, unknown>[] = [
+    { topic: chatTopic, event: "message", payload: inserted, private: true },
+    ...inboxRecipientIds.map((uid) => ({
+      topic: `inbox:${uid}`,
+      event: "message",
+      payload: inserted,
+      private: true,
+    })),
+  ];
   try {
     const res = await fetch(`${url}/realtime/v1/api/broadcast`, {
       method: "POST",
@@ -376,15 +507,7 @@ async function broadcastChatMessage(
         apikey: serviceKey,
         Authorization: `Bearer ${serviceKey}`,
       },
-      body: JSON.stringify({
-        messages: [
-          {
-            topic: `chat:${channelId}`,
-            event: "message",
-            payload: inserted,
-          },
-        ],
-      }),
+      body: JSON.stringify({ messages }),
     });
     if (!res.ok) {
       const txt = await res.text().catch(() => "");
@@ -438,6 +561,49 @@ Deno.serve(async (req: Request) => {
     const jwt = extractUserJwt(req);
     const userId = jwt ? await getAuthUserId(jwt) : null;
 
+    if (route === "/inbox" && req.method === "GET") {
+      const url = new URL(req.url);
+      const since = (url.searchParams.get("since") || "").trim();
+      if (!since) return err("Missing since");
+      if (!userId) {
+        return err("Unauthorized: sign in and send Authorization: Bearer <access_token>", 401);
+      }
+
+      const rawLimit =
+        parseInt(url.searchParams.get("limit") || "200", 10) || 200;
+      const limit = Math.min(500, Math.max(1, rawLimit));
+      const admin = adminClient();
+      const channelIds = await listChannelIdsForUser(admin, userId);
+      if (!channelIds.length) {
+        return json({ messages: [] });
+      }
+
+      const all: Record<string, unknown>[] = [];
+      const batchSize = 80;
+      for (let i = 0; i < channelIds.length && all.length < limit; i += batchSize) {
+        const batch = channelIds.slice(i, i + batchSize);
+        const need = limit - all.length;
+        const { data, error } = await admin
+          .from("chat_messages")
+          .select(CHAT_MSG_SELECT)
+          .in("channel_id", batch)
+          .gt("created_at", since)
+          .order("created_at", { ascending: true })
+          .limit(need);
+        if (error) {
+          console.error("[chat-supabase] inbox list", error);
+          return err("Database error", 500);
+        }
+        if (data?.length) all.push(...(data as Record<string, unknown>[]));
+      }
+      all.sort((a, b) => {
+        const ta = String(a.created_at || "");
+        const tb = String(b.created_at || "");
+        return ta.localeCompare(tb);
+      });
+      return json({ messages: await withSignedMediaList(admin, all.slice(0, limit)) });
+    }
+
     if (route === "/messages" && req.method === "GET") {
       const url = new URL(req.url);
       const channelId = (url.searchParams.get("channel_id") || "").trim();
@@ -460,9 +626,7 @@ Deno.serve(async (req: Request) => {
         const limit = Math.min(500, Math.max(1, rawLimit));
         const { data, error } = await admin
           .from("chat_messages")
-          .select(
-            "id, channel_id, sender_id, msg_type, body, media_url, duration_ms, created_at",
-          )
+          .select(CHAT_MSG_SELECT)
           .eq("channel_id", channelId)
           .gt("created_at", since)
           .order("created_at", { ascending: true })
@@ -471,7 +635,7 @@ Deno.serve(async (req: Request) => {
           console.error("[chat-supabase] list since", error);
           return err("Database error", 500);
         }
-        return json({ messages: data || [] });
+        return json({ messages: await withSignedMediaList(admin, (data || []) as Record<string, unknown>[]) });
       }
 
       // 历史分页模式（默认/?before=<iso>）：倒序取最近 N 条，再反转为升序返回
@@ -481,9 +645,7 @@ Deno.serve(async (req: Request) => {
       );
       let q = admin
         .from("chat_messages")
-        .select(
-          "id, channel_id, sender_id, msg_type, body, media_url, duration_ms, created_at",
-        )
+        .select(CHAT_MSG_SELECT)
         .eq("channel_id", channelId)
         .order("created_at", { ascending: false })
         .limit(limit);
@@ -497,7 +659,7 @@ Deno.serve(async (req: Request) => {
         console.error("[chat-supabase] list", error);
         return err("Database error", 500);
       }
-      return json({ messages: (data || []).reverse() });
+      return json({ messages: await withSignedMediaList(admin, ((data || []).reverse()) as Record<string, unknown>[]) });
     }
 
     if (route === "/messages" && req.method === "POST") {
@@ -518,6 +680,12 @@ Deno.serve(async (req: Request) => {
       const mediaUrl = body.media_url != null ? String(body.media_url) : null;
       const durationMs = body.duration_ms != null
         ? Number(body.duration_ms)
+        : null;
+      const clientMsgIdRaw = body.client_msg_id != null
+        ? String(body.client_msg_id).trim()
+        : "";
+      const clientMsgId = clientMsgIdRaw.length > 0 && clientMsgIdRaw.length <= 128
+        ? clientMsgIdRaw
         : null;
 
       if (!channelId) return err("Missing channel_id");
@@ -552,25 +720,54 @@ Deno.serve(async (req: Request) => {
 
       const senderId = userId;
 
+      if (clientMsgId) {
+        const { data: existing } = await admin
+          .from("chat_messages")
+          .select(CHAT_MSG_SELECT)
+          .eq("sender_id", senderId)
+          .eq("client_msg_id", clientMsgId)
+          .maybeSingle();
+        if (existing) {
+          return json({ message: existing });
+        }
+      }
+
+      const insertRow: Record<string, unknown> = {
+        channel_id: channelId,
+        sender_id: senderId,
+        msg_type: msgType,
+        body: msgType === "text" ? textBody : null,
+        media_url: msgType === "text" ? null : persistMediaRef(mediaUrl!, channelId),
+        duration_ms: Number.isFinite(durationMs) ? durationMs : null,
+      };
+      if (clientMsgId) insertRow.client_msg_id = clientMsgId;
+
       const { data: inserted, error } = await admin
         .from("chat_messages")
-        .insert({
-          channel_id: channelId,
-          sender_id: senderId,
-          msg_type: msgType,
-          body: msgType === "text" ? textBody : null,
-          media_url: msgType === "text" ? null : mediaUrl,
-          duration_ms: Number.isFinite(durationMs) ? durationMs : null,
-        })
-        .select("id, channel_id, sender_id, msg_type, body, media_url, duration_ms, created_at")
+        .insert(insertRow)
+        .select(CHAT_MSG_SELECT)
         .single();
 
       if (error) {
+        if (clientMsgId && error.code === "23505") {
+          const { data: dup } = await admin
+            .from("chat_messages")
+            .select(CHAT_MSG_SELECT)
+            .eq("sender_id", senderId)
+            .eq("client_msg_id", clientMsgId)
+            .maybeSingle();
+          if (dup) return json({ message: await withSignedMedia(admin, dup as Record<string, unknown>) });
+        }
         console.error("[chat-supabase] insert", error);
         return err("Insert failed", 500);
       }
 
-      await broadcastChatMessage(channelId, inserted);
+      const signedInserted = await withSignedMedia(admin, inserted as Record<string, unknown>);
+      const channelRow = await getChannelRow(admin, channelId);
+      const inboxIds = channelRow
+        ? recipientUserIdsForMessage(channelRow, senderId)
+        : [];
+      await broadcastChatMessage(channelId, signedInserted, inboxIds);
 
       // B4: push 分发改为后台执行，主请求立即返回；内联 _shared/push.ts 在 background 跑。
       // 非文本消息传 null 作为 preview —— _shared/push.ts 会按收件人语言替换成 [图片]/[语音]/[视频] 占位符。
@@ -584,7 +781,7 @@ Deno.serve(async (req: Request) => {
         ),
       );
 
-      return json({ message: inserted });
+      return json({ message: signedInserted });
     }
 
     if (route === "/messages/delete" && req.method === "POST") {
@@ -622,11 +819,11 @@ Deno.serve(async (req: Request) => {
       if (!deleteSecretOk(req)) {
         return err("Unauthorized", 401);
       }
-      // 默认保留 3 天（CHAT_RETENTION_DAYS / body.days 可覆盖；与 pg_cron 任务对齐）
+      // 默认保留 7 天（CHAT_RETENTION_DAYS / body.days 可覆盖；与 pg_cron 任务对齐）
       // 客户端 IndexedDB（chatLocalStore）长期保留消息与媒体，云端仅作短期同步窗口
       const body = await req.json().catch(() => ({})) as Record<string, unknown>;
       const envDays = Number(Deno.env.get("CHAT_RETENTION_DAYS"));
-      const rawDays = body.days ?? (Number.isFinite(envDays) ? envDays : 3);
+      const rawDays = body.days ?? (Number.isFinite(envDays) ? envDays : 7);
       const days = Math.min(365, Math.max(1, Number(rawDays) || 1));
       const includeStorage = body.includeStorage !== false; // 默认 true；明确传 false 才跳过
 
@@ -711,12 +908,19 @@ Deno.serve(async (req: Request) => {
       }
 
       const { data: pub } = admin.storage.from("chat-media").getPublicUrl(objectPath);
+      const privateBucket = chatMediaPrivate();
+      let readUrl = pub.publicUrl;
+      if (privateBucket) {
+        readUrl = (await signedChatMediaUrl(admin, objectPath)) || pub.publicUrl;
+      }
 
       return json({
         uploadUrl: signed.signedUrl,
         token: signed.token,
         objectPath,
-        publicUrl: pub.publicUrl,
+        publicUrl: privateBucket ? objectPath : pub.publicUrl,
+        readUrl,
+        private: privateBucket,
         kind,
         maxBytes: kind === "image" ? MAX_IMAGE : kind === "voice" ? MAX_VOICE : MAX_VIDEO,
       });
@@ -801,7 +1005,29 @@ Deno.serve(async (req: Request) => {
       if (legRlIns) console.warn("[chat-supabase] chat_rl_upload_sign insert (legacy upload)", legRlIns);
 
       const { data: pub } = admin.storage.from("chat-media").getPublicUrl(objectPath);
+      if (chatMediaPrivate()) {
+        const signedRead = await signedChatMediaUrl(admin, objectPath);
+        return json({ url: objectPath, path: objectPath, readUrl: signedRead, private: true });
+      }
       return json({ url: pub.publicUrl, path: objectPath });
+    }
+
+    if (route === "/media/sign" && req.method === "GET") {
+      if (!userId) {
+        return err("Unauthorized: sign in and send Authorization: Bearer <access_token>", 401);
+      }
+      const url = new URL(req.url);
+      const objectPath = (url.searchParams.get("path") || "").trim();
+      if (!objectPath || objectPath.includes("..")) return err("Invalid path");
+      const channelId = objectPath.split("/")[0] || "";
+      if (!channelId) return err("Invalid path");
+      const admin = adminClient();
+      if (!(await userCanReadChannel(admin, channelId, userId))) {
+        return err("Forbidden: not a participant of this channel", 403);
+      }
+      const signed = await signedChatMediaUrl(admin, objectPath);
+      if (!signed) return err("Sign failed", 500);
+      return json({ url: signed, path: objectPath, expiresIn: 3600 });
     }
 
     return err(`Not found: ${route}`, 404);

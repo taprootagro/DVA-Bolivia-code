@@ -364,8 +364,9 @@ async function mirrorFarmerBinding(
         farmer_user_id: farmerUserId,
         merchant_user_id: merchantUserId,
         channel_id: channelId,
+        created_at: new Date().toISOString(),
       },
-      { onConflict: "farmer_user_id,merchant_user_id", ignoreDuplicates: true },
+      { onConflict: "farmer_user_id,merchant_user_id" },
     );
   if (error) {
     console.warn("[merchant-bind-resolve] mirror farmer_merchant_bindings", error);

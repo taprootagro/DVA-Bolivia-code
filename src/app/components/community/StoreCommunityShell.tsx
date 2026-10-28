@@ -17,7 +17,7 @@ import {
   ChevronRight,
   QrCode,
 } from "lucide-react";
-import { Virtuoso, VirtuosoHandle } from "react-virtuoso";
+import { type VirtuosoHandle } from "react-virtuoso";
 import { useLanguage } from "../../hooks/useLanguage";
 import { useConfigContext } from "../../hooks/ConfigProvider";
 import { useAppBadge } from "../../hooks/useAppBadge";
@@ -43,13 +43,11 @@ import {
   removeLegacyDemoSupportContact,
 } from "../../services/storeChatDirectory";
 import { SecondaryView } from "../SecondaryView";
-import { ChatInputBar } from "./ChatInputBar";
 import { ChatPeerAvatar } from "./ChatPeerAvatar";
 import { MessageBubble } from "./MessageBubble";
-import { ImageViewer } from "./ImageViewer";
+import { ChatThreadView } from "./ChatThreadView";
 import { useChatMessages, type ChatActivePeerInput } from "./hooks/useChatMessages";
 import { useVoiceSystem } from "./hooks/useVoiceSystem";
-import { MockModeBanner } from "../MockModeBanner";
 import { isProductionBuild } from "../../utils/productionGuard";
 import { useStoreBackgroundMessages } from "./hooks/useStoreBackgroundMessages";
 import { useMerchantBind } from "./hooks/useMerchantBind";
@@ -81,10 +79,6 @@ const LazyCallDialog = lazy(() =>
 
 type Message = ChatMessage;
 type ShellMode = "recents" | "contacts" | "thread";
-
-function VirtuosoFooter() {
-  return <div className="h-2" />;
-}
 
 function ContactsBackCapture({ onBack }: { onBack: () => void }) {
   useBackHandler(onBack, false);
@@ -327,22 +321,6 @@ function StoreThreadPanel({ peer, storeUserId, onRefreshShell }: StoreThreadPane
   const [callStatus, setCallStatus] = useState<"calling" | "connected" | "ended">("calling");
   const [callDialogEverShown, setCallDialogEverShown] = useState(false);
 
-  const VirtuosoHeader = useMemo(
-    () =>
-      function Header() {
-        return <div className="h-2" />;
-      },
-    [],
-  );
-
-  const virtuosoComponents = useMemo(
-    () => ({
-      Header: VirtuosoHeader,
-      Footer: VirtuosoFooter,
-    }),
-    [VirtuosoHeader],
-  );
-
   const handleImageClick = useCallback((src: string) => {
     setViewingImage(src);
   }, []);
@@ -378,9 +356,6 @@ function StoreThreadPanel({ peer, storeUserId, onRefreshShell }: StoreThreadPane
 
   return (
     <div className="flex flex-col flex-1 min-h-0 w-full overflow-hidden">
-      {viewingImage && (
-        <ImageViewer src={viewingImage} onClose={() => setViewingImage(null)} />
-      )}
       {callDialogEverShown && (
         <Suspense fallback={null}>
           <LazyCallDialog
@@ -418,43 +393,31 @@ function StoreThreadPanel({ peer, storeUserId, onRefreshShell }: StoreThreadPane
         </div>
       </div>
 
-      <div className="flex-1 bg-white flex flex-col overflow-hidden min-h-0">
-        {showChatMockBanner && <MockModeBanner feature="chat" />}
-        {realtimeError && (
-          <div className="px-3 py-2 bg-red-50 border-b border-red-100 text-red-800 text-xs">
-            {realtimeError}
-          </div>
-        )}
-        <div className="flex-1 px-4 py-4 min-h-0">
-          <Virtuoso
-            ref={virtuosoRef}
-            data={chatMessages}
-            firstItemIndex={firstItemIndex}
-            computeItemKey={(_index, msg) => msg.id}
-            initialTopMostItemIndex={Math.max(0, chatMessages.length - 1)}
-            components={virtuosoComponents}
-            itemContent={renderItem}
-            followOutput="smooth"
-            alignToBottom
-            startReached={handleStartReached}
-          />
-        </div>
-        {peerBlocked ? (
-          <div className="flex-shrink-0 bg-amber-50 border-t border-amber-100 px-3 py-1.5 text-center text-xs text-amber-900">
-            {t.community.threadInputBlockedHint}
-          </div>
-        ) : null}
-        <ChatInputBar
-          onSendText={sendTextMessage}
-          onSendVoice={sendVoiceMessage}
-          onSendImage={sendImageMessage}
-          onCall={handleCall}
-          isSending={isSending}
-          callsEnabled={callsEnabled}
-          adjoinDock
-          readOnly={peerBlocked}
-        />
-      </div>
+      <ChatThreadView
+        chatMessages={chatMessages}
+        firstItemIndex={firstItemIndex}
+        virtuosoRef={virtuosoRef}
+        renderItem={renderItem}
+        onStartReached={handleStartReached}
+        realtimeError={realtimeError}
+        showChatMockBanner={showChatMockBanner}
+        viewingImage={viewingImage}
+        onCloseImage={() => setViewingImage(null)}
+        onSendText={sendTextMessage}
+        onSendVoice={sendVoiceMessage}
+        onSendImage={sendImageMessage}
+        onCall={handleCall}
+        isSending={isSending}
+        callsEnabled={callsEnabled}
+        readOnly={peerBlocked}
+        belowList={
+          peerBlocked ? (
+            <div className="flex-shrink-0 bg-amber-50 border-t border-amber-100 px-3 py-1.5 text-center text-xs text-amber-900">
+              {t.community.threadInputBlockedHint}
+            </div>
+          ) : null
+        }
+      />
     </div>
   );
 }
@@ -495,12 +458,8 @@ export function StoreCommunityShell({ storeUserId }: { storeUserId: string }) {
       listBlockedPeerKeys(storeUserId),
     ]);
     setBlockedPeerKeys(new Set(blockedList));
-    const rows = await Promise.all(
-      recents.map(async (recent) => ({
-        recent,
-        peer: await getPeer(storeUserId, recent.peerKey),
-      })),
-    );
+    const peerByKey = new Map(plist.map((p) => [p.peerKey, p]));
+    const rows = recents.map((recent) => ({ recent, peer: peerByKey.get(recent.peerKey) }));
     setRecentsRows(rows);
     setPeers(plist);
     rememberStoreLists(storeUserId, {
@@ -634,36 +593,9 @@ export function StoreCommunityShell({ storeUserId }: { storeUserId: string }) {
     [peers, blockedPeerKeys],
   );
 
-  /**
-   * 后台 Realtime 订阅上限（仅影响「未打开对话时」能否推送到最近列表；通讯录/最近列表本身无此限制）。
-   * 单 WS（getSupabaseBrowserClient）下 300 路 broadcast 订阅可接受；超出农户靠 Push 兜底。
-   */
-  const BACKGROUND_PEER_CAP = 300;
-
-  /** 含尚无 recent 的新绑定农户，否则收不到后台 broadcast → 最近列表不更新 */
-  const backgroundPeers = useMemo(() => {
-    const byKey = new Map(peers.map((p) => [p.peerKey, p]));
-    const ordered: StorePeerRecord[] = [];
-    const seen = new Set<string>();
-    for (const row of recentsRows) {
-      const p = byKey.get(row.recent.peerKey);
-      if (p && !seen.has(p.peerKey)) {
-        ordered.push(p);
-        seen.add(p.peerKey);
-      }
-    }
-    for (const p of peers) {
-      if (!seen.has(p.peerKey)) {
-        ordered.push(p);
-        seen.add(p.peerKey);
-      }
-    }
-    return ordered.slice(0, BACKGROUND_PEER_CAP);
-  }, [peers, recentsRows]);
-
   useStoreBackgroundMessages(
     storeUserId,
-    backgroundPeers,
+    peers,
     shell === "thread" ? activePeer?.peerKey ?? null : null,
     refreshLists,
     handleBackgroundIncoming,

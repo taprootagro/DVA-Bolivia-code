@@ -42,6 +42,7 @@ export function MarketAdDetailPage({ onClose, ad }: MarketAdDetailPageProps) {
             <CmsMediaImg 
               src={latestAd.image} 
               alt={latestAd.title} 
+              loading="eager"
               className="w-full aspect-[2/1] object-fill"
             />
           </div>

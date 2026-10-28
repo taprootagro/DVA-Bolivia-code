@@ -117,23 +117,17 @@ export function HomePage() {
     startTransition(() => setCurrentView(view));
   }, []);
 
-  /** 无网络或 chunk 拉取失败：不跳转、无任何提示（保持首页）。未登录时跳转登录页（除非管理员开启免登录 AI）。 */
+  /** 无网络或 chunk 拉取失败：不跳转、无任何提示（保持首页）。未登录时跳转登录页。 */
   const openAiAssistant = useCallback(async () => {
     if (aiOpening) return;
     if (typeof navigator !== "undefined" && !navigator.onLine) return;
-    const allowGuestAi = config.cloudAIConfig?.allowUnauthenticatedUse === true;
-    if (!allowGuestAi && !isUserLoggedIn()) {
+    if (!isUserLoggedIn()) {
       navigate("/login", { state: { from: "aiAssistant" } });
       return;
     }
     setAiOpening(true);
     try {
-      if (
-        !allowGuestAi &&
-        isUserLoggedIn() &&
-        isServerAssignedId() &&
-        cloudAIUsesBackend()
-      ) {
+      if (isServerAssignedId() && cloudAIUsesBackend()) {
         await Promise.race([
           ensureEdgeSessionReadyDetailed(),
           new Promise<void>((resolve) => setTimeout(resolve, 6000)),
@@ -146,7 +140,7 @@ export function HomePage() {
     } finally {
       setAiOpening(false);
     }
-  }, [aiOpening, config.cloudAIConfig?.allowUnauthenticatedUse, navigate, navigateTo]);
+  }, [aiOpening, navigate, navigateTo]);
 
   const openStatement = useCallback(async () => {
     if (statementOpening) return;
@@ -452,7 +446,7 @@ export function HomePage() {
                     <Loader2 className="w-10 h-10 text-emerald-600 animate-spin" />
                   ) : config.homeIcons?.aiAssistantIconUrl ? (
                     <div className="aspect-square h-full max-w-full">
-                      <CmsMediaImg src={config.homeIcons.aiAssistantIconUrl} alt={config.homeIcons?.aiAssistantLabel || t.home.aiAssistant} className="h-full w-full object-cover" />
+                      <CmsMediaImg src={config.homeIcons.aiAssistantIconUrl} alt={config.homeIcons?.aiAssistantLabel || t.home.aiAssistant} loading="eager" className="h-full w-full object-cover" />
                     </div>
                   ) : (
                     <Bot className="w-12 h-12 sm:w-14 sm:h-14 text-emerald-600 flex-shrink-0" />
@@ -471,7 +465,7 @@ export function HomePage() {
                     <Loader2 className="w-10 h-10 text-emerald-600 animate-spin" />
                   ) : config.homeIcons?.statementIconUrl ? (
                     <div className="aspect-square h-full max-w-full">
-                      <CmsMediaImg src={config.homeIcons.statementIconUrl} alt={config.homeIcons?.statementLabel || t.home.statement} className="h-full w-full object-cover" />
+                      <CmsMediaImg src={config.homeIcons.statementIconUrl} alt={config.homeIcons?.statementLabel || t.home.statement} loading="eager" className="h-full w-full object-cover" />
                     </div>
                   ) : (
                     <Calculator className="w-12 h-12 sm:w-14 sm:h-14 text-emerald-600 flex-shrink-0" />

@@ -114,7 +114,12 @@ const translations: Translations = {
       contactBlockedLabel: 'Bloqueado',
       peerLimitReached:
         'Límite de contactos (1000). Elimine un contacto antes de añadir nuevos.',
-      threadInputBlockedHint: 'Este contacto está bloqueado: el chat es solo lectura.'
+      threadInputBlockedHint: 'Este contacto está bloqueado: el chat es solo lectura.',
+      sendTooFastWait: 'Envías demasiado rápido. Espera {seconds} s antes de reintentar.',
+      sendTooFast: 'Envías demasiado rápido. Espera un momento antes de reintentar.',
+      liveChatFailed: 'Falló la conexión del chat en vivo: es posible que no reciba mensajes hasta reabrir el chat.',
+      liveChatConnectFailed: 'No se pudo conectar al chat en vivo. Deslice para actualizar o reabra la conversación.',
+      liveChatReconnectFailed: 'No se pudo reconectar al chat en vivo. Deslice para actualizar o reabra la conversación.',
     },
     camera: {
       title: 'Escanear',
@@ -282,6 +287,7 @@ const translations: Translations = {
       accountDeleteFailed: 'No se pudo eliminar la cuenta. Inténtalo más tarde o contacta soporte.',
       accountDeleteSessionExpired: 'Sesión expirada. Inicia sesión de nuevo e inténtalo otra vez.',
       accountDeleteRateLimited: 'Demasiados intentos. Inténtalo de nuevo en 24 horas.',
+      accountDeleteBackendUnavailable: 'Por ahora no es posible eliminar la cuenta. Contacta con soporte.',
       accountDeleteInProgress: 'Eliminando…',
       accountDeleteCmsWarning: 'Esta cuenta tiene acceso de gestión de contenido. Perderás acceso al Gestor de contenido.',
       accountDeletedSenderLabel: 'Cuenta eliminada',
@@ -456,6 +462,7 @@ const translations: Translations = {
       voiceMsg: 'Mensaje de voz',
       micDenied: 'Permiso de micrófono denegado',
       networkErrorHint: 'Fallo de conexión de red. Tome una foto e inténtelo de nuevo cuando tenga mejor señal.',
+      imageUnreadable: 'No se pudo leer la foto. Tome otra o elija JPG/PNG/WebP de la galería.',
       localAINoVoice: 'La IA local no admite chat de voz. Use texto o IA en la nube para conversaciones.',
       aiDisabledBothTitle: 'IA desactivada',
       aiDisabledBothDesc: 'No hay ONNX local ni IA en la nube activada. Active al menos una en Configuración de contenido → Modelo de IA.',
@@ -465,6 +472,7 @@ const translations: Translations = {
       localAiOffCannotLoad: 'El modelo local está desactivado; no se puede cargar ONNX.',
       chatMessageTooFast: 'Envías mensajes demasiado rápido. Espera un momento.',
       aiLoginRequired: 'Inicia sesión para continuar.',
+      providerMisconfigured: 'El servicio de IA no está configurado correctamente. Contacta al administrador.',
     },
     pushNotifications: {
       title: 'Notificaciones Push',

@@ -93,6 +93,7 @@ interface SimpleDB {
   _raw: IDBDatabase;
   get<T>(store: string, key: string): Promise<T | undefined>;
   getAll<T>(store: string): Promise<T[]>;
+  getAllFromIndex<T>(store: string, index: string, key: IDBValidKey): Promise<T[]>;
   put<T>(store: string, value: T, key?: IDBValidKey): Promise<void>;
   delete(store: string, key: string): Promise<void>;
   /** Execute callback in a readwrite transaction, await tx.done for completion */
@@ -114,6 +115,10 @@ function wrapDB(raw: IDBDatabase): SimpleDB {
     async getAll<T>(storeName: string) {
       const tx = raw.transaction(storeName, 'readonly');
       return promisifyRequest(tx.objectStore(storeName).getAll()) as Promise<T[]>;
+    },
+    async getAllFromIndex<T>(storeName: string, indexName: string, key: IDBValidKey) {
+      const tx = raw.transaction(storeName, 'readonly');
+      return promisifyRequest(tx.objectStore(storeName).index(indexName).getAll(key)) as Promise<T[]>;
     },
     async put<T>(storeName: string, value: T, key?: IDBValidKey) {
       const tx = raw.transaction(storeName, 'readwrite');
@@ -149,6 +154,15 @@ function wrapDB(raw: IDBDatabase): SimpleDB {
   };
 }
 
+function requestPersistentStorageOnce(): void {
+  if (typeof navigator === 'undefined' || !navigator.storage?.persist) return;
+  try {
+    void navigator.storage.persist().catch(() => { /* ignore */ });
+  } catch {
+    /* ignore */
+  }
+}
+
 function openSimpleDB(
   name: string,
   version: number,
@@ -160,18 +174,14 @@ function openSimpleDB(
     request.onsuccess = () => resolve(wrapDB(request.result));
     request.onerror = () => {
       const error = request.error;
-      // If the existing DB has a higher version (e.g. left over from a previous
-      // idb/Dexie wrapper), delete it and retry with our version.
+      // Existing DB may have a higher version — open as-is instead of wiping user data.
       if (error && error.name === 'VersionError') {
-        console.warn(`[TaprootDB] VersionError on "${name}" — deleting stale DB and retrying...`);
-        const delReq = indexedDB.deleteDatabase(name);
-        delReq.onsuccess = () => {
-          const retry = indexedDB.open(name, version);
-          retry.onupgradeneeded = (ev) => onUpgrade(retry.result, ev.oldVersion);
-          retry.onsuccess = () => resolve(wrapDB(retry.result));
-          retry.onerror = () => reject(retry.error);
-        };
-        delReq.onerror = () => reject(delReq.error);
+        console.warn(
+          `[TaprootDB] VersionError on "${name}" — opening existing DB without version downgrade`,
+        );
+        const fallback = indexedDB.open(name);
+        fallback.onsuccess = () => resolve(wrapDB(fallback.result));
+        fallback.onerror = () => reject(fallback.error);
       } else {
         reject(error);
       }
@@ -225,7 +235,7 @@ function getDB(): Promise<SimpleDB> {
       }
     }
     if (oldVersion < 3) {
-      // 聊天本地长留：消息行 + 媒体 blob（云端 24h 自动清空）
+      // 聊天本地长留：消息行 + 媒体 blob（云端 7 天自动清空）
       if (!raw.objectStoreNames.contains('chatMessages')) {
         const cm = raw.createObjectStore('chatMessages', { keyPath: 'id' });
         cm.createIndex('byChannel', ['channelName', 'timestamp'], { unique: false });
@@ -237,6 +247,7 @@ function getDB(): Promise<SimpleDB> {
       }
     }
   }).then((db) => {
+    requestPersistentStorageOnce();
     _db = db;
     db._raw.onclose = () => {
       _db = null;

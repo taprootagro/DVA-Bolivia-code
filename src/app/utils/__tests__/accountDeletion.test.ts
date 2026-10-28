@@ -110,6 +110,20 @@ describe("deleteAccount", () => {
     const result = await deleteAccount();
     expect(result).toEqual({ ok: false, error: "session_expired", status: 401 });
   });
+
+  it("refuses to report success for a server account when no delete endpoint is configured", async () => {
+    vi.mocked(isServerAssignedId).mockReturnValue(true);
+    vi.mocked(storageGetJSON).mockReturnValue({
+      backendProxyConfig: { enabled: false, supabaseUrl: "", supabaseAnonKey: "" },
+    });
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const result = await deleteAccount();
+    expect(result).toEqual({ ok: false, error: "backend_unavailable" });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(purgeAllChatLocalData).not.toHaveBeenCalled();
+    expect(logoutUser).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+  });
 });
 
 describe("clearLocalAccountData", () => {

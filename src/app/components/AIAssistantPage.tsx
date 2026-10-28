@@ -1,22 +1,23 @@
 import { SecondaryView } from "./SecondaryView";
-import { useLanguage, type Translations } from "../hooks/useLanguage";
+import { useLanguage } from "../hooks/useLanguage";
 import { useState, useRef, useEffect, useCallback, useMemo, type RefObject } from "react";
-import { Camera, Loader, X, ScanLine, RefreshCw, AlertTriangle, FolderOpen, Play, Pause, Sparkles, Copy, Check, ChevronDown, ChevronUp, Send, Mic, PenLine, Image as ImageIcon, Volume2, VolumeX, MicOff } from "lucide-react";
+import { Camera, Loader, X, ScanLine, RefreshCw, AlertTriangle, FolderOpen, Play, Pause, Sparkles, Copy, Check, ChevronDown, ChevronUp, Send, Mic, PenLine, Image as ImageIcon, Volume2, VolumeX } from "lucide-react";
 import { TaprootAgroDetector, Detection } from "../utils/taprootAgroDetector";
 import { useConfigContext } from "../hooks/ConfigProvider";
-import { cloudAIService, cloudAIUsesBackend, CLOUD_AI_SESSION_EXPIRED, CLOUD_AI_SESSION_TRANSIENT, CLOUD_AI_MOCK, AI_QUEUE_TIMEOUT, type AIRequestExtras, type DeepAnalysisResult } from "../services/CloudAIService";
-import { getLocationForAI, isAppPermissionEnabled } from "../utils/appPermissions";
-import { cloudAIGuard } from "../utils/cloudAIGuard";
+import { cloudAIService, getCloudAIHealth } from "../services/CloudAIService";
+import { COMPRESS_PRESETS, compressImageBase64, compressImageFile } from "../utils/imageCompressor";
 import { useKeyboardHeight } from "../hooks/useKeyboardHeight";
-import { isNative, speechRecognition, textToSpeech, bridge, type WebSpeechHoldSession } from "../utils/capacitor-bridge";
-import { languageToSpeechTag, speechTagFallbacks, ttsRateForLanguage } from "../utils/speechLocale";
-import { storageGet, storageSet } from "../utils/safeStorage";
+import { isNative, bridge } from "../utils/capacitor-bridge";
 import { useNavigate } from "react-router";
-import { ensureEdgeSessionReadyDetailed, isUserLoggedIn, isServerAssignedId } from "../utils/auth";
 import { MockModeBanner } from "./MockModeBanner";
 import { isProductionBuild } from "../utils/productionGuard";
+import { AIMarkdown } from "./ai/AIMarkdown";
+import { AIChatMessageList } from "./ai/AIChatMessageList";
+import { VoiceHoldButton } from "./ai/VoiceHoldButton";
+import { useCloudAIConversation } from "../hooks/useCloudAIConversation";
+import { useTtsReader } from "../hooks/useTtsReader";
+import { useVoiceHoldRecorder } from "../hooks/useVoiceHoldRecorder";
 
-const TTS_PREF_KEY = 'ai_tts_enabled';
 const AI_PENDING_PHOTO_KEY = '__taproot_ai_pending_photo__';
 let aiPendingPhotoMem: string | null = null;
 
@@ -47,100 +48,11 @@ function clearAiPendingPhoto() {
   }
 }
 
-function readFileAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = (ev) => resolve(ev.target?.result as string);
-    reader.onerror = () => reject(new Error('Failed to read file'));
-    reader.readAsDataURL(file);
-  });
-}
-
-type AiStrings = Translations["ai"];
-
-/** 对话气泡：避免展示 NOT_LOGGED_IN 等内部错误码 */
-function formatCloudAiChatError(raw: string, a: AiStrings): string {
-  const msg = (raw || "").trim();
-  if (msg === CLOUD_AI_SESSION_EXPIRED || msg === "SESSION_EXPIRED") {
-    return a.aiLoginRequired?.trim() || a.deepAnalysisError;
-  }
-  if (msg === CLOUD_AI_SESSION_TRANSIENT || msg === "SESSION_TRANSIENT") {
-    return a.networkErrorHint || a.deepAnalysisError;
-  }
-  if (msg === "NOT_LOGGED_IN") {
-    const hint = a.cloudAiNotLoggedInHint?.trim();
-    return hint ? `${a.deepAnalysisError} ${hint}` : a.deepAnalysisError;
-  }
-  if (msg === "DAILY_LIMIT_REACHED") return a.dailyLimitReached;
-  if (msg === "IMAGE_TOO_SMALL") return a.imageTooSmall;
-  const cd = /^COOLDOWN:(\d+)$/.exec(msg);
-  if (cd) return a.cooldownWait.replace(/\{seconds\}/g, cd[1]!);
-  if (msg === "RATE_LIMITED" || msg === "CHAT_TOO_FAST") return a.chatMessageTooFast;
-  if (msg === AI_QUEUE_TIMEOUT) return a.serverBusyTimeout;
-  return msg || a.deepAnalysisError;
-}
-
-/** 深度分析错误卡片副标题（标题已是 deepAnalysisError） */
-function formatCloudAiDeepErrorDetail(raw: string, a: AiStrings): string {
-  const msg = (raw || "").trim();
-  if (msg === CLOUD_AI_SESSION_EXPIRED || msg === "SESSION_EXPIRED") {
-    return a.aiLoginRequired?.trim() || a.deepAnalysisError;
-  }
-  if (msg === CLOUD_AI_SESSION_TRANSIENT || msg === "SESSION_TRANSIENT") {
-    return a.networkErrorHint || a.deepAnalysisError;
-  }
-  if (msg === "NOT_LOGGED_IN") {
-    return a.cloudAiNotLoggedInHint?.trim() || a.deepAnalysisError;
-  }
-  if (msg === "DAILY_LIMIT_REACHED") return a.dailyLimitReached;
-  if (msg === "IMAGE_TOO_SMALL") return a.imageTooSmall;
-  const cd = /^COOLDOWN:(\d+)$/.exec(msg);
-  if (cd) return a.cooldownWait.replace(/\{seconds\}/g, cd[1]!);
-  if (msg === "RATE_LIMITED" || msg === "CHAT_TOO_FAST") return a.chatMessageTooFast;
-  if (msg === AI_QUEUE_TIMEOUT) return a.serverBusyTimeout;
-  return msg || a.deepAnalysisError;
-}
-
-function isSessionExpiredError(raw: string): boolean {
-  const msg = (raw || "").trim();
-  return msg === CLOUD_AI_SESSION_EXPIRED || msg === "SESSION_EXPIRED";
-}
-
-function isSessionTransientError(raw: string): boolean {
-  const msg = (raw || "").trim();
-  return msg === CLOUD_AI_SESSION_TRANSIENT || msg === "SESSION_TRANSIENT";
-}
-
-// Blob → `data:audio/webm;base64,...`（用于直接把录音发给 Gemini 音频直发路径）
-function blobToBase64DataUrl(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(blob);
-  });
-}
-
-// 按兼容顺序挑 MediaRecorder 支持的 mime
-function pickAudioMimeType(): string | undefined {
-  if (typeof MediaRecorder === 'undefined') return undefined;
-  const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'];
-  for (const m of candidates) {
-    try {
-      if (MediaRecorder.isTypeSupported(m)) return m;
-    } catch { /* ignore */ }
-  }
-  return undefined;
-}
-
 interface AIAssistantPageProps {
   onClose: () => void;
 }
 
 type Status = 'idle' | 'loading' | 'ready' | 'no-model' | 'error' | 'cloud-only' | 'ai-disabled';
-
-// Fix 5: 预生成波形条高度，避免在 render 中调用 Math.random()
-const AI_WAVE_HEIGHTS = [1.5, 3, 2, 3.5, 1.5, 3, 2].map(h => h * 4);
 
 export function AIAssistantPage({ onClose }: AIAssistantPageProps) {
   const { t, isRTL, language } = useLanguage();
@@ -149,53 +61,71 @@ export function AIAssistantPage({ onClose }: AIAssistantPageProps) {
   const navigate = useNavigate();
   const { isKeyboardOpen } = useKeyboardHeight();
 
-  /** GPS 仅首诊附带；追问/语音/追图不再上报坐标。 */
-  const buildAIRequestExtras = useCallback(
-    async (opts?: { includeLocation?: boolean }): Promise<AIRequestExtras | undefined> => {
-      try {
-        if (opts?.includeLocation !== true) return undefined;
-        const loc = await getLocationForAI();
-        if (!loc) return undefined;
-        return {
-          locationContext: {
-            latitude: loc.latitude,
-            longitude: loc.longitude,
-            accuracyMeters: loc.accuracyMeters,
-          },
-        };
-      } catch {
-        return undefined;
-      }
-    },
-    [],
-  );
-
   // Cloud-only mode: when cloud AI is enabled AND device is online, skip local model
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const cloudAiEnabled = config.cloudAIConfig?.enabled === true;
   const enableLocalModel = config.aiModelConfig?.enableLocalModel === true;
   const cloudOnlyMode = cloudAiEnabled && isOnline;
+  const cloudAiMode = useMemo(
+    () => cloudAIService.mode,
+    [config.cloudAIConfig, config.backendProxyConfig],
+  );
 
-  const needsAuthSession = useMemo(() => {
-    const guest = config.cloudAIConfig?.allowUnauthenticatedUse === true;
-    return (
-      cloudAiEnabled &&
-      cloudAIUsesBackend() &&
-      !guest &&
-      isUserLoggedIn() &&
-      isServerAssignedId()
-    );
-  }, [cloudAiEnabled, config.cloudAIConfig?.allowUnauthenticatedUse]);
-
-  const [sessionReady, setSessionReady] = useState(() => !needsAuthSession);
-  const [needsReverify, setNeedsReverify] = useState(false);
+  const { ttsEnabled, ttsSpeaking, ttsPaused, speakText, stopTTS, toggleTTS, togglePauseResume, readAloud } =
+    useTtsReader(language);
+  const {
+    sessionReady,
+    needsReverify,
+    deepAnalysisResult,
+    deepAnalyzing,
+    queueWaitSeconds,
+    deepError,
+    deepErrorNoRetry,
+    isLocalAIResult,
+    chatMessages,
+    chatMessagesRef,
+    chatReplying,
+    dailyUsage,
+    isUnlimited,
+    runDeepAnalysis,
+    showLocalAnalysis,
+    appendAiMessage,
+    sendChatImage,
+    submitFollowUpText,
+    sendVoiceAudio,
+    resetConversation,
+  } = useCloudAIConversation({ a, language, cloudAIConfig: config.cloudAIConfig });
 
   // 仅 Gemini 走"音频直发 → 多模态识别理解"；其他提供商（Qwen 等）维持原有的本地 STT → 文字流程。
-  // 客户端拿不到 Edge 的 AI_PROVIDER secret，因此以「内容管理 → AI 模型」里填写的 modelId / providerName 为准。
+  // 以 Edge /health 返回的 provider（AI_PROVIDER secret）为准；探测完成前或失败时按「内容管理 → AI 模型」的 modelId / providerName 判断。
+  const [edgeProvider, setEdgeProvider] = useState<string | null>(null);
+  useEffect(() => {
+    if (!cloudAiEnabled || !sessionReady || cloudAiMode !== 'backend') return;
+    let cancelled = false;
+    void getCloudAIHealth().then((h) => {
+      if (!cancelled && h) setEdgeProvider(h.provider);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [cloudAiEnabled, sessionReady, cloudAiMode]);
   const modelIdLower = (config.cloudAIConfig?.modelId || '').toLowerCase();
   const providerNameLower = (config.cloudAIConfig?.providerName || '').toLowerCase();
-  const useDirectAudio =
-    modelIdLower.includes('gemini') || providerNameLower.includes('gemini');
+  const useDirectAudio = edgeProvider
+    ? edgeProvider === 'gemini'
+    : modelIdLower.includes('gemini') || providerNameLower.includes('gemini');
+
+  const recorder = useVoiceHoldRecorder({
+    language,
+    useDirectAudio,
+    canStart: !!deepAnalysisResult && !chatReplying && !deepAnalyzing,
+    sttNotSupported: a.sttNotSupported,
+    onStart: stopTTS,
+    onAudio: sendVoiceAudio,
+    onTranscript: submitFollowUpText,
+    onNoSpeech: () => appendAiMessage(`⚠️ ${a.sttNoResult}`),
+    onSttFailed: () => appendAiMessage(`⚠️ ${a.sttFailed}`),
+  });
 
   // 系统相机 input ref
   const cameraInputRef = useRef<HTMLInputElement>(null);
@@ -208,53 +138,13 @@ export function AIAssistantPage({ onClose }: AIAssistantPageProps) {
   const [done, setDone] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
-  // Deep Analysis state
-  const [deepAnalysisResult, setDeepAnalysisResult] = useState<DeepAnalysisResult | null>(null);
-  const [deepAnalyzing, setDeepAnalyzing] = useState(false);
-  const [queueWaitSeconds, setQueueWaitSeconds] = useState(0);
-  const [deepError, setDeepError] = useState('');
   const [deepExpanded, setDeepExpanded] = useState(true);
   const [copied, setCopied] = useState(false);
-  const [isLocalAIResult, setIsLocalAIResult] = useState(false); // Track if current result is from local AI
 
-  // Anti-abuse guard state
-  const [cooldownSec, setCooldownSec] = useState(0);
-  const [dailyUsage, setDailyUsage] = useState({ used: 0, limit: 20 });
-  const [cachedHit, setCachedHit] = useState(false);
-  const [cooldownHint, setCooldownHint] = useState(false);
-  const cooldownRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const isUnlimited = dailyUsage.limit >= 999;
-
-  /** 追问/语音/追图连发：与 `cloudAIConfig` 中「追问最小间隔」或「调用间隔（秒）」一致 */
-  const chatFollowUpMinIntervalMs = useMemo(() => {
-    const c = config.cloudAIConfig;
-    const fromChat = c?.clientChatMinIntervalSeconds;
-    const fromCooldown = c?.clientCooldownSeconds;
-    const sec =
-      typeof fromChat === "number" && Number.isFinite(fromChat) && fromChat >= 0
-        ? fromChat
-        : typeof fromCooldown === "number" && Number.isFinite(fromCooldown) && fromCooldown >= 0
-          ? fromCooldown
-          : 20;
-    return Math.max(1000, Math.min(600_000, Math.floor(sec) * 1000));
-  }, [config.cloudAIConfig?.clientChatMinIntervalSeconds, config.cloudAIConfig?.clientCooldownSeconds]);
-
-  // Follow-up chat state
-  const [chatMessages, setChatMessages] = useState<{ role: 'user' | 'ai'; text: string; image?: string; voiceDuration?: number; audioUrl?: string }[]>([]);
+  // Follow-up chat input
   const [chatInput, setChatInput] = useState('');
-  const [chatReplying, setChatReplying] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const chatInputRef = useRef<HTMLTextAreaElement>(null);
-
-  const lastChatFollowUpAtRef = useRef(0);
-  const isChatFollowUpTooFast = useCallback((): boolean => {
-    const now = Date.now();
-    return lastChatFollowUpAtRef.current > 0 && now - lastChatFollowUpAtRef.current < chatFollowUpMinIntervalMs;
-  }, [chatFollowUpMinIntervalMs]);
-  const markChatFollowUp = useCallback(() => {
-    lastChatFollowUpAtRef.current = Date.now();
-  }, []);
-
 
   // Voice message playback state (for waveform animation)
   const [playingVoiceIdx, setPlayingVoiceIdx] = useState<number | null>(null);
@@ -282,7 +172,7 @@ export function AIAssistantPage({ onClose }: AIAssistantPageProps) {
       setPlayingVoiceIdx(idx);
 
       // Try real audio playback if audioUrl exists
-      const msg = chatMessages[idx];
+      const msg = chatMessagesRef.current[idx];
       const audioUrl = msg?.audioUrl;
 
       if (audioUrl) {
@@ -321,254 +211,18 @@ export function AIAssistantPage({ onClose }: AIAssistantPageProps) {
         voicePlayTimerRef.current = setTimeout(() => setPlayingVoiceIdx(null), duration * 1000);
       }
     }
-  }, [playingVoiceIdx, chatMessages, stopCurrentVoice]);
+  }, [playingVoiceIdx, stopCurrentVoice]);
 
   // Input mode: default voice, user can switch to text via pen icon
   const [inputMode, setInputMode] = useState<'voice' | 'text'>('voice');
 
-  // Voice recording state
-  const [isVoiceRecording, setIsVoiceRecording] = useState(false);
-  const [voiceTime, setVoiceTime] = useState(0);
-  const voiceTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  // Refs mirror state for touch handlers (avoid stale closures)
-  const isVoiceRecordingRef = useRef(false);
-  const voiceTimeRef = useRef(0);
-  /** 按下瞬间时间戳，用于真实按住时长（避免 1s 定时器导致 <1s 全被当成 0） */
-  const voiceHoldStartedAtRef = useRef(0);
-
-  /** Web：按住说话时的 Web Speech 会话；App：松手后在 handleVoiceRecordEnd 里调原生 start */
-  const webSpeechSessionRef = useRef<WebSpeechHoldSession | null>(null);
-  const lastVoiceDurationRef = useRef(0);
-
-  // Gemini 音频直发路径：录制原始音频 Blob，base64 后交给 cloudAIService.voiceFollowUp。
-  // Qwen 及其它提供商继续走 STT → 文字流程，这些 ref 不会被触及。
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const mediaStreamRef = useRef<MediaStream | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
-  const directAudioActiveRef = useRef(false);
-  /** Gemini 路径：getUserMedia + recorder.start 完成后再允许 stop（解决权限弹窗慢于松手） */
-  const directAudioReadyRef = useRef<Promise<void> | null>(null);
-  /** 本次按住是否走 Gemini 直录（勿用 directAudioActiveRef 判断分支：出错时它会被提前清掉） */
-  const voiceUseDirectAudioRef = useRef(false);
-
-  // Voice cancel-pending state (finger dragged outside button)
-  const [voiceCancelPending, setVoiceCancelPendingState] = useState(false);
-  const voiceCancelPendingRef = useRef(false);
-  const setVoiceCancelPending = useCallback((pending: boolean) => {
-    voiceCancelPendingRef.current = pending;
-    setVoiceCancelPendingState(pending);
-  }, []);
-
-  const [micPermissionDenied, setMicPermissionDenied] = useState(false);
-  /** Web Speech 不可用（如 Safari） */
-  const [sttError, setSttError] = useState<string | null>(null);
-
-  useEffect(() => {
-    return () => {
-      webSpeechSessionRef.current?.abort();
-      webSpeechSessionRef.current = null;
-      // Gemini 直发路径：卸载时务必释放麦克风，避免后台常开
-      if (mediaStreamRef.current) {
-        mediaStreamRef.current.getTracks().forEach((t) => {
-          try { t.stop(); } catch { /* ignore */ }
-        });
-        mediaStreamRef.current = null;
-      }
-      if (mediaRecorderRef.current) {
-        try {
-          if (mediaRecorderRef.current.state !== 'inactive') {
-            mediaRecorderRef.current.stop();
-          }
-        } catch { /* ignore */ }
-        mediaRecorderRef.current = null;
-      }
-      audioChunksRef.current = [];
-      directAudioActiveRef.current = false;
-    };
-  }, []);
-
-  // 语音气泡里保存的是 URL.createObjectURL 生成的临时 URL，卸载时统一 revoke，避免内存泄漏。
-  const chatMessagesRef = useRef(chatMessages);
-  useEffect(() => { chatMessagesRef.current = chatMessages; }, [chatMessages]);
-  useEffect(() => {
-    return () => {
-      for (const m of chatMessagesRef.current) {
-        if (m.audioUrl && m.audioUrl.startsWith('blob:')) {
-          try { URL.revokeObjectURL(m.audioUrl); } catch { /* ignore */ }
-        }
-      }
-    };
-  }, []);
-
   // 语音录制是否可用（Fix 4: 只有 deepAnalysisResult 存在且 AI 没在回复时才可录音）
   const voiceEnabled = !!deepAnalysisResult && !chatReplying && !deepAnalyzing && !isLocalAIResult && cloudAiEnabled;
-
-  // TTS auto-read state — 持久化到 safeStorage，默认 ON
-  const [ttsEnabled, setTtsEnabled] = useState<boolean>(() => {
-    const raw = storageGet(TTS_PREF_KEY);
-    if (raw === 'false') return false;
-    return true;
-  });
-  useEffect(() => {
-    storageSet(TTS_PREF_KEY, ttsEnabled ? 'true' : 'false');
-  }, [ttsEnabled]);
-
-  // 正在朗读 / 已暂停 —— 驱动顶栏 UI
-  const [ttsSpeaking, setTtsSpeaking] = useState(false);
-  const [ttsPaused, setTtsPaused] = useState(false);
-
-  // 当前朗读任务的 Abort 句柄；开启新一次朗读前先 abort 旧任务 + stop 引擎
-  const ttsAbortRef = useRef<AbortController | null>(null);
-
-  // Strip markdown for cleaner TTS reading
-  const stripMarkdown = useCallback((md: string): string => {
-    return md
-      .replace(/#{1,6}\s*/g, '')           // headings
-      .replace(/\*\*([^*]+)\*\*/g, '$1')   // bold
-      .replace(/\*([^*]+)\*/g, '$1')       // italic
-      .replace(/`([^`]+)`/g, '$1')         // inline code
-      .replace(/```[\s\S]*?```/g, '')      // code blocks
-      .replace(/>\s?/g, '')                // blockquotes
-      .replace(/[-*+]\s/g, '')             // list bullets
-      .replace(/\d+\.\s/g, '')             // numbered lists
-      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // links
-      .replace(/\n{2,}/g, '. ')            // paragraph breaks → pause
-      .replace(/\n/g, ' ')
-      .trim();
-  }, []);
-
-  // 打断当前朗读（抛弃队列 + 引擎 stop），不改变 ttsEnabled
-  const stopTTS = useCallback(() => {
-    if (ttsAbortRef.current) {
-      ttsAbortRef.current.abort();
-      ttsAbortRef.current = null;
-    }
-    textToSpeech.stop().catch(() => { /* ignore */ });
-    setTtsSpeaking(false);
-    setTtsPaused(false);
-  }, []);
-
-  // 朗读入口：按当前 UI 语言分句串播；force=true 绕过 ttsEnabled
-  const speakText = useCallback((text: string, force = false) => {
-    if (!ttsEnabled && !force) return;
-    const clean = stripMarkdown(text);
-    if (!clean) return;
-
-    if (ttsAbortRef.current) ttsAbortRef.current.abort();
-    const controller = new AbortController();
-    ttsAbortRef.current = controller;
-    setTtsSpeaking(true);
-    setTtsPaused(false);
-
-    const lang = languageToSpeechTag(language);
-    const nativeDelayMs = isNative() ? 350 : 0;
-
-    const run = async () => {
-      await textToSpeech.stop().catch(() => { /* ignore */ });
-      if (controller.signal.aborted) return;
-      if (nativeDelayMs) {
-        await new Promise((r) => setTimeout(r, nativeDelayMs));
-      }
-      if (controller.signal.aborted) return;
-      await textToSpeech.speakQueue(clean, {
-        lang,
-        langFallbacks: speechTagFallbacks(language),
-        rate: ttsRateForLanguage(language),
-        pitch: 1.0,
-        signal: controller.signal,
-      });
-    };
-
-    run().finally(() => {
-      if (ttsAbortRef.current === controller) {
-        ttsAbortRef.current = null;
-        setTtsSpeaking(false);
-        setTtsPaused(false);
-      }
-    });
-  }, [ttsEnabled, stripMarkdown, language]);
-
-  // Cleanup TTS on unmount
-  useEffect(() => {
-    return () => { stopTTS(); };
-  }, [stopTTS]);
-
-  // 静音开关：关闭时立即打断正在播的
-  const toggleTTS = useCallback(() => {
-    setTtsEnabled(prev => {
-      if (prev) stopTTS();
-      return !prev;
-    });
-  }, [stopTTS]);
-
-  // 暂停 / 恢复（与静音开关独立）
-  const togglePauseResume = useCallback(() => {
-    if (!ttsSpeaking) return;
-    if (ttsPaused) {
-      textToSpeech.resume().catch(() => { /* ignore */ });
-      setTtsPaused(false);
-    } else {
-      textToSpeech.pause().catch(() => { /* ignore */ });
-      setTtsPaused(true);
-    }
-  }, [ttsSpeaking, ttsPaused]);
-
-  // 点击某条 AI 文字气泡 → 强制朗读（自动开启 TTS 并打断旧朗读）
-  const handleAITextClick = useCallback((text: string) => {
-    stopTTS();
-    if (!ttsEnabled) setTtsEnabled(true);
-    speakText(text, true);
-  }, [ttsEnabled, speakText, stopTTS]);
 
   // Camera menu state (for chat bar)
   const [showCamMenu, setShowCamMenu] = useState(false);
   const chatFileRef = useRef<HTMLInputElement>(null);
   const chatCameraRef = useRef<HTMLInputElement>(null);
-
-  // Refresh guard state
-  const refreshGuardState = useCallback(() => {
-    setDailyUsage(cloudAIGuard.getDailyUsage());
-    const cd = cloudAIGuard.getCooldownRemaining();
-    setCooldownSec(cd);
-    if (cd > 0 && !cooldownRef.current) {
-      cooldownRef.current = setInterval(() => {
-        const remaining = cloudAIGuard.getCooldownRemaining();
-        setCooldownSec(remaining);
-        setDailyUsage(cloudAIGuard.getDailyUsage());
-        if (remaining <= 0 && cooldownRef.current) {
-          clearInterval(cooldownRef.current);
-          cooldownRef.current = null;
-        }
-      }, 1000);
-    }
-  }, []);
-
-  // Init guard state + cleanup
-  useEffect(() => {
-    refreshGuardState();
-    return () => {
-      if (cooldownRef.current) clearInterval(cooldownRef.current);
-    };
-  }, []);
-
-  useEffect(() => {
-    cloudAIService.onQueueWait = (_attempt, waitSeconds) => {
-      setQueueWaitSeconds(waitSeconds);
-    };
-    return () => {
-      cloudAIService.onQueueWait = null;
-      setQueueWaitSeconds(0);
-    };
-  }, []);
-
-  // When remote config updates client limits, refresh usage display
-  useEffect(() => {
-    refreshGuardState();
-  }, [
-    config.cloudAIConfig?.clientDailyLimit,
-    config.cloudAIConfig?.clientCooldownSeconds,
-    refreshGuardState,
-  ]);
 
   // Listen for online/offline changes
   useEffect(() => {
@@ -580,15 +234,6 @@ export function AIAssistantPage({ onClose }: AIAssistantPageProps) {
       window.removeEventListener('online', goOnline);
       window.removeEventListener('offline', goOffline);
     };
-  }, []);
-
-  // Helper: format guard translation strings
-  const guardText = useCallback((template: string, vars: Record<string, string | number>) => {
-    let result = template;
-    for (const [k, v] of Object.entries(vars)) {
-      result = result.replace(`{${k}}`, String(v));
-    }
-    return result;
   }, []);
 
   const fileRef = useRef<HTMLInputElement>(null);
@@ -694,34 +339,6 @@ export function AIAssistantPage({ onClose }: AIAssistantPageProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Only run once on mount
 
-  // 打开 AI / 回前台：静默续期 JWT，cloud-only 首诊须 sessionReady
-  useEffect(() => {
-    if (!needsAuthSession) {
-      setSessionReady(true);
-      setNeedsReverify(false);
-      return;
-    }
-    let cancelled = false;
-    const syncSession = async () => {
-      const { token, failureKind } = await ensureEdgeSessionReadyDetailed();
-      if (cancelled) return;
-      setSessionReady(!!token || failureKind === 'transient');
-      setNeedsReverify(failureKind === 'permanent');
-    };
-    void syncSession();
-    const onVisible = () => {
-      if (document.visibilityState === "visible") void syncSession();
-    };
-    const onPageShow = () => { void syncSession(); };
-    document.addEventListener("visibilitychange", onVisible);
-    window.addEventListener("pageshow", onPageShow);
-    return () => {
-      cancelled = true;
-      document.removeEventListener("visibilitychange", onVisible);
-      window.removeEventListener("pageshow", onPageShow);
-    };
-  }, [needsAuthSession]);
-
   const goToReverifyLogin = useCallback(() => {
     navigate("/login", { state: { from: "aiAssistant" } });
   }, [navigate]);
@@ -779,7 +396,8 @@ export function AIAssistantPage({ onClose }: AIAssistantPageProps) {
         if (!photo) return;
         const dataUrl = await bridge.camera.photoToDataUrl(photo);
         if (dataUrl) {
-          onDataUrl(dataUrl);
+          const compressed = await compressImageBase64(dataUrl, COMPRESS_PRESETS.ai);
+          onDataUrl(compressed);
           return;
         }
       } catch {
@@ -793,19 +411,19 @@ export function AIAssistantPage({ onClose }: AIAssistantPageProps) {
     const f = e.target.files?.[0];
     if (!f) return;
     try {
-      applyPhotoDataUrl(await readFileAsDataUrl(f));
+      applyPhotoDataUrl(await compressImageFile(f, COMPRESS_PRESETS.ai));
     } catch {
       /* ignore */
     }
     if (cameraInputRef.current) cameraInputRef.current.value = '';
   };
 
-  // 选图 — 压缩在 CloudAIService.prepareImageForCloudAI 中统一执行一次
+  // 选图 — 拍照/相册先压到 AI 预设，减轻内存与 sessionStorage 压力
   const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
     if (!f) return;
     try {
-      applyPhotoDataUrl(await readFileAsDataUrl(f));
+      applyPhotoDataUrl(await compressImageFile(f, COMPRESS_PRESETS.ai));
     } catch {
       /* ignore */
     }
@@ -818,7 +436,7 @@ export function AIAssistantPage({ onClose }: AIAssistantPageProps) {
     setShowCamMenu(false);
     let imgSrc: string;
     try {
-      imgSrc = await readFileAsDataUrl(f);
+      imgSrc = await compressImageFile(f, COMPRESS_PRESETS.ai);
     } catch {
       if (chatCameraRef.current) chatCameraRef.current.value = '';
       return;
@@ -832,54 +450,10 @@ export function AIAssistantPage({ onClose }: AIAssistantPageProps) {
     if (!f) return;
     setShowCamMenu(false);
     try {
-      const imgSrc = await readFileAsDataUrl(f);
+      const imgSrc = await compressImageFile(f, COMPRESS_PRESETS.ai);
       sendChatImage(imgSrc);
     } catch {
       /* ignore */
-    }
-  };
-
-  const sendChatImage = async (imgSrc: string) => {
-    if (isChatFollowUpTooFast()) {
-      setChatMessages((prev) => [
-        ...prev,
-        { role: 'user', text: '', image: imgSrc },
-        { role: 'ai', text: a.chatMessageTooFast },
-      ]);
-      return;
-    }
-    markChatFollowUp();
-    setChatMessages(prev => [...prev, { role: 'user', text: '', image: imgSrc }]);
-    if (!cloudAiEnabled) {
-      setChatMessages(prev => [...prev, { role: 'ai', text: `⚠️ ${a.cloudAiDisabled}` }]);
-      return;
-    }
-    setChatReplying(true);
-    try {
-      const previousContext = (deepAnalysisResult?.analysis || '') +
-        chatMessages.map(m => `\n\n[${m.role === 'user' ? 'User' : 'AI'}]: ${m.image ? '[Photo]' : m.text}`).join('');
-      const aiExtras = await buildAIRequestExtras();
-      const reply = await cloudAIService.followUpWithImage(
-        imgSrc,
-        '[User sent a follow-up photo for further analysis]',
-        previousContext,
-        language,
-        aiExtras,
-      );
-      setChatMessages(prev => [...prev, { role: 'ai', text: reply }]);
-      refreshGuardState();
-    } catch (err: any) {
-      const msg = err?.message || '';
-      const isNetworkError = msg.includes('network') || msg.includes('fetch') || msg.includes('Failed to fetch') || 
-                             msg.includes('NetworkError') || msg.includes('offline') || err?.name === 'TypeError';
-      const cloudAIEnabled = config.cloudAIConfig?.enabled === true;
-      const errorMsg = (isNetworkError && cloudAIEnabled)
-        ? a.networkErrorHint
-        : formatCloudAiChatError(msg, a);
-      setChatMessages(prev => [...prev, { role: 'ai', text: `⚠️ ${errorMsg}` }]);
-      refreshGuardState();
-    } finally {
-      setChatReplying(false);
     }
   };
 
@@ -923,16 +497,9 @@ export function AIAssistantPage({ onClose }: AIAssistantPageProps) {
     
     analysis += `${a.disclaimer}`;
     
-    // Set as deep analysis result
-    setDeepAnalysisResult({
-      analysis,
-      provider: 'local',
-      model: 'onnx',
-      timestamp: Date.now(),
-    });
+    showLocalAnalysis(analysis);
     setDeepExpanded(true);
-    setIsLocalAIResult(true); // Mark as local AI result
-    
+
     // Auto-read analysis (both local-only mode and network fallback mode)
     speakText(analysis);
   };
@@ -1014,24 +581,16 @@ export function AIAssistantPage({ onClose }: AIAssistantPageProps) {
   };
 
   const reset = () => {
+    resetConversation();
     clearAiPendingPhoto();
     setImage(null);
     setResults([]);
     setDone(false);
-    setDeepAnalysisResult(null);
-    setDeepAnalyzing(false);
-    setDeepError('');
     setCopied(false);
-    setIsLocalAIResult(false);
-    setChatMessages([]);
     setChatInput('');
-    setChatReplying(false);
     setPlayingVoiceIdx(null);
     stopCurrentVoice();
-    // 重置录音 refs
-    isVoiceRecordingRef.current = false;
-    voiceTimeRef.current = 0;
-    if (voiceTimerRef.current) { clearInterval(voiceTimerRef.current); voiceTimerRef.current = null; }
+    recorder.reset();
     if (fileRef.current) fileRef.current.value = '';
     if (cameraInputRef.current) cameraInputRef.current.value = '';
   };
@@ -1049,103 +608,73 @@ export function AIAssistantPage({ onClose }: AIAssistantPageProps) {
     }
   }, [done, results]);
 
+  /** 云端首诊网络失败时的本地兜底；返回要展示的错误文案，已展示本地结果时返回 null。 */
+  const fallbackToLocalAnalysis = async (imageSrc: string, isCloudOnly: boolean): Promise<string | null> => {
+    if (!isCloudOnly && results.length > 0 && enableLocalModel) {
+      // Scenario 3a: Network error with cloud AI enabled + local results already available
+      // Fallback to local AI with network warning
+      generateLocalAnalysis(results, true);
+      return null;
+    }
+    if (isCloudOnly && enableLocalModel) {
+      // Scenario 3b: Cloud-only mode network error - fallback to local detection
+      // (Model should already be loaded in background, but load if needed)
+      try {
+        // Ensure local model is loaded (should already be loaded from background)
+        if (!detectorRef.current) {
+          console.log('⚠️ Background model not ready, loading now...');
+          const aiCfg = config.aiModelConfig;
+          const detector = new TaprootAgroDetector({
+            modelUrl: aiCfg?.modelUrl || '',
+            labelsUrl: aiCfg?.labelsUrl || '',
+          });
+          await detector.loadModel();
+          detectorRef.current = detector;
+        } else {
+          console.log('✅ Using background-loaded model for fallback');
+        }
+
+        // Run local detection
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.src = imageSrc;
+        await new Promise<void>((res, rej) => { img.onload = () => res(); img.onerror = rej; });
+        const dets = await detectorRef.current!.detect(img);
+        setResults(dets);
+        setDone(true);
+        pendingDrawRef.current = { img, dets };
+        if (dets.length > 0) {
+          generateLocalAnalysis(dets, true);
+          return null;
+        }
+        return a.networkErrorHint;
+      } catch {
+        // Local detection also failed
+        return a.networkErrorHint;
+      }
+    }
+    if (isCloudOnly) return a.offlineCloudOnlyNoLocal;
+    // Network error but no local model available
+    return a.networkErrorHint;
+  };
+
   // Deep Analysis handler (unified for both local+cloud and cloud-only modes)
   const handleDeepAnalysis = async (forceCloudOnly = false) => {
     if (!image) return;
     // In cloud-only mode or forced cloud-only, we don't require local detection results
     const isCloudOnly = cloudOnlyMode || forceCloudOnly;
     if (!isCloudOnly && results.length === 0) return;
-    setDeepAnalyzing(true);
-    setDeepError('');
-    setDeepAnalysisResult(null);
     setDeepExpanded(true);
-    setCachedHit(false);
-
-    try {
-      const detections = isCloudOnly ? [] : results.map((d) => ({ className: d.className, score: d.score }));
-      const aiExtras = await buildAIRequestExtras({ includeLocation: true });
-      const result = await cloudAIService.analyze(image, detections, language, aiExtras);
-      clearAiPendingPhoto();
-      setDeepAnalysisResult(result);
-      setIsLocalAIResult(false); // Mark as cloud AI result
-      if (isCloudOnly) setDone(true);
-      refreshGuardState();
-      // Auto-read the initial analysis
-      speakText(result.analysis);
-    } catch (err: any) {
-      const msg = err?.message || '';
-      if (msg === 'CLOUD_AI_DISABLED' || msg.includes('CLOUD_AI_DISABLED')) {
-        setDeepError(a.cloudAiDisabled);
-        refreshGuardState();
-        return;
-      }
-      if (msg === CLOUD_AI_MOCK || msg.includes(CLOUD_AI_MOCK)) {
-        setDeepError(
-          language === 'zh' || language === 'zh-TW'
-            ? '云端 AI 后端未配置，无法提供真实分析。'
-            : 'Cloud AI backend is not configured. Real analysis is unavailable.',
-        );
-        refreshGuardState();
-        return;
-      }
-      // Check if it's a network error and cloud AI is enabled
-      const isNetworkError = msg.includes('network') || msg.includes('fetch') || msg.includes('Failed to fetch') || 
-                             msg.includes('NetworkError') || msg.includes('offline') || err?.name === 'TypeError';
-      if (isNetworkError && cloudAiEnabled && !isCloudOnly && results.length > 0 && enableLocalModel) {
-        // Scenario 3a: Network error with cloud AI enabled + local results already available
-        // Fallback to local AI with network warning
-        generateLocalAnalysis(results, true);
-      } else if (isNetworkError && cloudAiEnabled && isCloudOnly && enableLocalModel) {
-        // Scenario 3b: Cloud-only mode network error - fallback to local detection
-        // (Model should already be loaded in background, but load if needed)
-        try {
-          // Ensure local model is loaded (should already be loaded from background)
-          if (!detectorRef.current) {
-            console.log('⚠️ Background model not ready, loading now...');
-            const aiCfg = config.aiModelConfig;
-            const detector = new TaprootAgroDetector({
-              modelUrl: aiCfg?.modelUrl || '',
-              labelsUrl: aiCfg?.labelsUrl || '',
-            });
-            await detector.loadModel();
-            detectorRef.current = detector;
-          } else {
-            console.log('✅ Using background-loaded model for fallback');
-          }
-          
-          // Run local detection
-          const img = new Image();
-          img.crossOrigin = 'anonymous';
-          img.src = image;
-          await new Promise<void>((res, rej) => { img.onload = () => res(); img.onerror = rej; });
-          const dets = await detectorRef.current!.detect(img);
-          setResults(dets);
-          setDone(true);
-          pendingDrawRef.current = { img, dets };
-          if (dets.length > 0) {
-            generateLocalAnalysis(dets, true);
-          } else {
-            setDeepError(a.networkErrorHint);
-          }
-        } catch (localErr) {
-          // Local detection also failed
-          setDeepError(a.networkErrorHint);
-        }
-      } else if (isNetworkError && cloudAiEnabled && isCloudOnly && !enableLocalModel) {
-        setDeepError(a.offlineCloudOnlyNoLocal);
-      } else if (isNetworkError && cloudAiEnabled) {
-        // Network error but no local model available
-        setDeepError(a.networkErrorHint);
-      } else {
-        if (isSessionExpiredError(msg)) setNeedsReverify(true);
-        else if (isSessionTransientError(msg)) setNeedsReverify(false);
-        setDeepError(formatCloudAiDeepErrorDetail(msg, a));
-      }
-      refreshGuardState();
-    } finally {
-      setDeepAnalyzing(false);
-      setQueueWaitSeconds(0);
-    }
+    const result = await runDeepAnalysis({
+      image,
+      detections: isCloudOnly ? [] : results.map((d) => ({ className: d.className, score: d.score })),
+      onTransportError: () => fallbackToLocalAnalysis(image, isCloudOnly),
+    });
+    if (!result) return;
+    clearAiPendingPhoto();
+    if (isCloudOnly) setDone(true);
+    // Auto-read the initial analysis
+    speakText(result.analysis);
   };
 
   // Cloud-only shorthand
@@ -1171,83 +700,6 @@ export function AIAssistantPage({ onClose }: AIAssistantPageProps) {
     }
   };
 
-  /** 文字追问（与语音转写成功后共用） */
-  const submitFollowUpText = useCallback(async (msg: string) => {
-    const trimmed = msg.trim();
-    if (!trimmed || !deepAnalysisResult || chatReplying || deepAnalyzing) return;
-
-    if (isChatFollowUpTooFast()) {
-      setChatMessages((prev) => [
-        ...prev,
-        { role: 'user' as const, text: trimmed },
-        { role: 'ai', text: a.chatMessageTooFast },
-      ]);
-      return;
-    }
-    markChatFollowUp();
-
-    setChatMessages((prev) => [...prev, { role: 'user' as const, text: trimmed }]);
-
-    if (isLocalAIResult) {
-      setChatMessages((prev) => [...prev, { role: 'ai', text: a.localAINoVoice }]);
-      return;
-    }
-    if (!cloudAiEnabled) {
-      setChatMessages((prev) => [...prev, { role: 'ai', text: `⚠️ ${a.cloudAiDisabled}` }]);
-      return;
-    }
-
-    setChatReplying(true);
-    try {
-      const fullContext =
-        deepAnalysisResult.analysis +
-        chatMessages.map((m) => `\n\n[${m.role === 'user' ? 'User' : 'AI'}]: ${m.text}`).join('') +
-        `\n\n[User]: ${trimmed}`;
-      const aiExtras = await buildAIRequestExtras();
-      const reply = await cloudAIService.followUp(trimmed, fullContext, language, aiExtras);
-      setChatMessages((prev) => [...prev, { role: 'ai', text: reply }]);
-      refreshGuardState();
-    } catch (err: unknown) {
-      const m = err instanceof Error ? err.message : '';
-      const isNetworkError =
-        m.includes('network') ||
-        m.includes('fetch') ||
-        m.includes('Failed to fetch') ||
-        m.includes('NetworkError') ||
-        m.includes('offline') ||
-        (err as { name?: string })?.name === 'TypeError';
-      const cloudAIEnabled = config.cloudAIConfig?.enabled === true;
-      const errorMsg =
-        isNetworkError && cloudAIEnabled ? a.networkErrorHint : formatCloudAiChatError(m, a);
-      if (isSessionExpiredError(m)) setNeedsReverify(true);
-      else if (isSessionTransientError(m)) setNeedsReverify(false);
-      setChatMessages((prev) => [...prev, { role: 'ai', text: `⚠️ ${errorMsg}` }]);
-      refreshGuardState();
-    } finally {
-      setChatReplying(false);
-    }
-  }, [
-    a.chatMessageTooFast,
-    a.cloudAiDisabled,
-    a.cloudAiNotLoggedInHint,
-    a.cooldownWait,
-    a.dailyLimitReached,
-    a.deepAnalysisError,
-    a.localAINoVoice,
-    a.networkErrorHint,
-    chatMessages,
-    chatReplying,
-    cloudAiEnabled,
-    deepAnalysisResult,
-    deepAnalyzing,
-    isLocalAIResult,
-    isChatFollowUpTooFast,
-    language,
-    markChatFollowUp,
-    config.cloudAIConfig?.enabled,
-    refreshGuardState,
-  ]);
-
   const handleChatSend = async () => {
     const msg = chatInput.trim();
     if (!msg || !deepAnalysisResult || chatReplying || deepAnalyzing) return;
@@ -1257,376 +709,6 @@ export function AIAssistantPage({ onClose }: AIAssistantPageProps) {
     }
     await submitFollowUpText(msg);
   };
-
-  const handleVoiceRecordEndRef = useRef<() => Promise<void>>(async () => {});
-
-  // 彻底释放麦克风 — Gemini 直发路径所有退出路径都必须调用
-  const releaseMediaStream = useCallback(() => {
-    if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach((track) => {
-        try { track.stop(); } catch { /* ignore */ }
-      });
-      mediaStreamRef.current = null;
-    }
-    if (mediaRecorderRef.current) {
-      try {
-        if (mediaRecorderRef.current.state !== 'inactive') {
-          mediaRecorderRef.current.stop();
-        }
-      } catch { /* ignore */ }
-      mediaRecorderRef.current = null;
-    }
-    audioChunksRef.current = [];
-    directAudioActiveRef.current = false;
-  }, []);
-
-  // 等 MediaRecorder 的 onstop 触发并把 chunks 拼成 Blob；超时兜底
-  const stopRecorderAndGetBlob = useCallback((): Promise<Blob | null> => {
-    return new Promise((resolve) => {
-      const recorder = mediaRecorderRef.current;
-      if (!recorder) {
-        resolve(null);
-        return;
-      }
-      if (recorder.state === 'inactive') {
-        const blob = audioChunksRef.current.length
-          ? new Blob(audioChunksRef.current, { type: recorder.mimeType || 'audio/webm' })
-          : null;
-        resolve(blob);
-        return;
-      }
-      const timeout = setTimeout(() => {
-        const blob = audioChunksRef.current.length
-          ? new Blob(audioChunksRef.current, { type: recorder.mimeType || 'audio/webm' })
-          : null;
-        resolve(blob);
-      }, 1500);
-      recorder.onstop = () => {
-        clearTimeout(timeout);
-        const blob = audioChunksRef.current.length
-          ? new Blob(audioChunksRef.current, { type: recorder.mimeType || 'audio/webm' })
-          : null;
-        resolve(blob);
-      };
-      try {
-        // 确保最后一小段音频进入 ondataavailable（部分浏览器松手即停会丢尾包）
-        try {
-          (recorder as MediaRecorder & { requestData?: () => void }).requestData?.();
-        } catch { /* ignore */ }
-        recorder.stop();
-      } catch {
-        clearTimeout(timeout);
-        resolve(null);
-      }
-    });
-  }, []);
-
-  const handleVoiceRecordEnd = useCallback(async () => {
-    if (!isVoiceRecordingRef.current) return;
-    const elapsedMs = Math.max(0, performance.now() - voiceHoldStartedAtRef.current);
-    // 真实按住秒数（用于气泡展示）；逻辑最短时长用 elapsedMs，不用 1s 步进定时器
-    const durationSec = Math.max(1, Math.round(elapsedMs / 1000));
-    const wasCancelled = voiceCancelPendingRef.current;
-    const wasDirectAudio = voiceUseDirectAudioRef.current;
-    lastVoiceDurationRef.current = durationSec;
-    isVoiceRecordingRef.current = false;
-    voiceCancelPendingRef.current = false;
-    setIsVoiceRecording(false);
-    setVoiceCancelPendingState(false);
-    if (voiceTimerRef.current) {
-      clearInterval(voiceTimerRef.current);
-      voiceTimerRef.current = null;
-    }
-
-    // 过短视为误触（约 <0.4s）；原先用 voiceTimeRef<1 会误伤「按住 0.6s」等短句
-    if (wasCancelled || elapsedMs < 400) {
-      voiceUseDirectAudioRef.current = false;
-      if (wasDirectAudio) {
-        directAudioReadyRef.current = null;
-        releaseMediaStream();
-      } else if (!isNative()) {
-        webSpeechSessionRef.current?.abort();
-        webSpeechSessionRef.current = null;
-      }
-      voiceTimeRef.current = 0;
-      setVoiceTime(0);
-      return;
-    }
-
-    // ═══ Gemini 音频直发分支 ═══
-    if (wasDirectAudio) {
-      // 先等麦克风 + MediaRecorder 就绪（权限弹窗可能比松手晚，不能在 getUserMedia 里用 isVoiceRecordingRef 判断取消）
-      try {
-        const ready = directAudioReadyRef.current;
-        if (ready) {
-          await Promise.race([
-            ready,
-            new Promise<void>((_, rej) =>
-              setTimeout(() => rej(new Error('direct_audio_ready_timeout')), 20000),
-            ),
-          ]);
-        }
-      } catch (e) {
-        console.warn('[AI Voice] direct audio not ready', e);
-        releaseMediaStream();
-        directAudioReadyRef.current = null;
-        voiceUseDirectAudioRef.current = false;
-        const msg = e instanceof Error ? e.message : '';
-        if (msg === 'direct_audio_ready_timeout') {
-          setChatMessages((prev) => [...prev, { role: 'ai', text: `⚠️ ${a.sttNoResult}` }]);
-        } else {
-          setMicPermissionDenied(true);
-          setTimeout(() => setMicPermissionDenied(false), 3000);
-        }
-        voiceTimeRef.current = 0;
-        setVoiceTime(0);
-        return;
-      }
-      directAudioReadyRef.current = null;
-
-      let blob: Blob | null = null;
-      try {
-        blob = await stopRecorderAndGetBlob();
-      } catch (e) {
-        console.warn('[AI Voice] stop recorder failed', e);
-      } finally {
-        releaseMediaStream();
-      }
-
-      if (!blob || blob.size === 0) {
-        voiceUseDirectAudioRef.current = false;
-        setChatMessages((prev) => [...prev, { role: 'ai', text: `⚠️ ${a.sttNoResult}` }]);
-        voiceTimeRef.current = 0;
-        setVoiceTime(0);
-        return;
-      }
-
-      const audioUrl = URL.createObjectURL(blob);
-      if (isChatFollowUpTooFast()) {
-        setChatMessages((prev) => [
-          ...prev,
-          { role: 'user' as const, text: '', voiceDuration: durationSec, audioUrl },
-          { role: 'ai', text: a.chatMessageTooFast },
-        ]);
-        voiceTimeRef.current = 0;
-        setVoiceTime(0);
-        voiceUseDirectAudioRef.current = false;
-        return;
-      }
-      markChatFollowUp();
-      setChatMessages((prev) => [
-        ...prev,
-        { role: 'user' as const, text: '', voiceDuration: durationSec, audioUrl },
-      ]);
-
-      if (isLocalAIResult) {
-        voiceUseDirectAudioRef.current = false;
-        setChatMessages((prev) => [...prev, { role: 'ai', text: a.localAINoVoice }]);
-        voiceTimeRef.current = 0;
-        setVoiceTime(0);
-        return;
-      }
-      if (!cloudAiEnabled) {
-        voiceUseDirectAudioRef.current = false;
-        setChatMessages((prev) => [...prev, { role: 'ai', text: `⚠️ ${a.cloudAiDisabled}` }]);
-        voiceTimeRef.current = 0;
-        setVoiceTime(0);
-        return;
-      }
-
-      setChatReplying(true);
-      try {
-        const audioBase64 = await blobToBase64DataUrl(blob);
-        const fullContext =
-          (deepAnalysisResult?.analysis || '') +
-          chatMessages
-            .map((m) => `\n\n[${m.role === 'user' ? 'User' : 'AI'}]: ${m.text}`)
-            .join('') +
-          `\n\n[User]: (voice message, ${durationSec}s)`;
-        const aiExtras = await buildAIRequestExtras();
-        const reply = await cloudAIService.voiceFollowUp(audioBase64, fullContext, language, aiExtras);
-        setChatMessages((prev) => [...prev, { role: 'ai', text: reply }]);
-        refreshGuardState();
-      } catch (err: unknown) {
-        const m = err instanceof Error ? err.message : '';
-        const isNetworkError =
-          m.includes('network') ||
-          m.includes('fetch') ||
-          m.includes('Failed to fetch') ||
-          m.includes('NetworkError') ||
-          m.includes('offline') ||
-          (err as { name?: string })?.name === 'TypeError';
-        const errorMsg =
-          isNetworkError && cloudAiEnabled ? a.networkErrorHint : formatCloudAiChatError(m, a);
-        setChatMessages((prev) => [...prev, { role: 'ai', text: `⚠️ ${errorMsg}` }]);
-        refreshGuardState();
-      } finally {
-        setChatReplying(false);
-        voiceTimeRef.current = 0;
-        setVoiceTime(0);
-      }
-      voiceUseDirectAudioRef.current = false;
-      return;
-    }
-
-    // ═══ 现有 STT 分支（Qwen / native / 其它） ═══
-    try {
-      let matches: string[] = [];
-      if (isNative()) {
-        matches = await speechRecognition.start({
-          language: languageToSpeechTag(language),
-          popup: true,
-        });
-      } else {
-        const sess = webSpeechSessionRef.current;
-        webSpeechSessionRef.current = null;
-        matches = sess ? await sess.stop() : [];
-      }
-
-      const text = (matches[0] || '').trim();
-      if (!text) {
-        setChatMessages((prev) => [...prev, { role: 'ai', text: `⚠️ ${a.sttNoResult}` }]);
-        voiceTimeRef.current = 0;
-        setVoiceTime(0);
-        return;
-      }
-
-      await submitFollowUpText(text);
-    } catch (e) {
-      console.warn('[AI Voice STT]', e);
-      setChatMessages((prev) => [...prev, { role: 'ai', text: `⚠️ ${a.sttFailed}` }]);
-    } finally {
-      voiceUseDirectAudioRef.current = false;
-      voiceTimeRef.current = 0;
-      setVoiceTime(0);
-    }
-  }, [
-    language,
-    a.sttNoResult,
-    a.sttFailed,
-    a.chatMessageTooFast,
-    a.localAINoVoice,
-    a.cloudAiDisabled,
-    a.cloudAiNotLoggedInHint,
-    a.cooldownWait,
-    a.dailyLimitReached,
-    a.networkErrorHint,
-    a.deepAnalysisError,
-    submitFollowUpText,
-    releaseMediaStream,
-    stopRecorderAndGetBlob,
-    deepAnalysisResult,
-    chatMessages,
-    cloudAiEnabled,
-    isLocalAIResult,
-    isChatFollowUpTooFast,
-    markChatFollowUp,
-    refreshGuardState,
-  ]);
-
-  const handleVoiceRecordStart = useCallback(() => {
-    if (isVoiceRecordingRef.current) return;
-    if (!deepAnalysisResult || chatReplying || deepAnalyzing) return;
-    if (!isAppPermissionEnabled('microphone')) {
-      setMicPermissionDenied(true);
-      setTimeout(() => setMicPermissionDenied(false), 3000);
-      return;
-    }
-    stopTTS();
-    setMicPermissionDenied(false);
-    setSttError(null);
-    voiceHoldStartedAtRef.current = performance.now();
-    voiceUseDirectAudioRef.current = useDirectAudio;
-    isVoiceRecordingRef.current = true;
-    voiceTimeRef.current = 0;
-    voiceCancelPendingRef.current = false;
-    setIsVoiceRecording(true);
-    setVoiceCancelPendingState(false);
-    setVoiceTime(0);
-
-    // ═══ Gemini 音频直发：MediaRecorder 录制 webm/opus，松手后 base64 化上传 ═══
-    if (useDirectAudio) {
-      directAudioActiveRef.current = true;
-      directAudioReadyRef.current = null;
-      audioChunksRef.current = [];
-      const mimeType = pickAudioMimeType();
-
-      directAudioReadyRef.current = new Promise<void>((resolve, reject) => {
-        navigator.mediaDevices
-          .getUserMedia({ audio: true })
-          .then((stream) => {
-            // 仅根据 directAudioActiveRef：松手时 handleVoiceRecordEnd 会先把 isVoiceRecordingRef 置 false，
-            // 若仍用 isVoiceRecordingRef 会误判为「已取消」并永远建不成 MediaRecorder（权限弹窗慢时必现）。
-            if (!directAudioActiveRef.current) {
-              stream.getTracks().forEach((t) => { try { t.stop(); } catch { /* ignore */ } });
-              resolve();
-              return;
-            }
-            mediaStreamRef.current = stream;
-            const recorder = mimeType
-              ? new MediaRecorder(stream, { mimeType })
-              : new MediaRecorder(stream);
-            recorder.ondataavailable = (e) => {
-              if (e.data && e.data.size > 0) audioChunksRef.current.push(e.data);
-            };
-            mediaRecorderRef.current = recorder;
-            try {
-              recorder.start(250);
-              resolve();
-            } catch (e) {
-              console.warn('[AI Voice] recorder.start failed', e);
-              releaseMediaStream();
-              reject(e instanceof Error ? e : new Error('recorder_start_failed'));
-            }
-          })
-          .catch((err) => {
-            console.warn('[AI Voice] getUserMedia denied', err);
-            directAudioActiveRef.current = false;
-            reject(err instanceof Error ? err : new Error(String(err)));
-          });
-      });
-    } else if (!isNative()) {
-      // ═══ Qwen 及 Web 降级：保留原有 Web Speech STT 会话 ═══
-      const sess = speechRecognition.startWebHoldSession({
-        language: languageToSpeechTag(language),
-      });
-      if (!sess) {
-        isVoiceRecordingRef.current = false;
-        setIsVoiceRecording(false);
-        setVoiceTime(0);
-        setSttError(a.sttNotSupported);
-        setTimeout(() => setSttError(null), 4000);
-        return;
-      }
-      webSpeechSessionRef.current = sess;
-    }
-    // Native + 非 Gemini：沿用原逻辑，松手时在 handleVoiceRecordEnd 里调 speechRecognition.start
-
-    voiceTimerRef.current = setInterval(() => {
-      voiceTimeRef.current += 1;
-      const t = voiceTimeRef.current;
-      setVoiceTime(t);
-      if (t >= 59) {
-        if (voiceTimerRef.current) {
-          clearInterval(voiceTimerRef.current);
-          voiceTimerRef.current = null;
-        }
-        lastVoiceDurationRef.current = t;
-        void handleVoiceRecordEndRef.current();
-      }
-    }, 1000);
-  }, [
-    stopTTS,
-    deepAnalysisResult,
-    chatReplying,
-    deepAnalyzing,
-    language,
-    a.sttNotSupported,
-    useDirectAudio,
-    releaseMediaStream,
-  ]);
-
-  handleVoiceRecordEndRef.current = handleVoiceRecordEnd;
 
   // Auto-scroll chat to bottom
   useEffect(() => {
@@ -1664,44 +746,6 @@ export function AIAssistantPage({ onClose }: AIAssistantPageProps) {
     speakText(text);
   }, [chatMessages, ttsEnabled, speakText]);
 
-  // Show cooldown hint temporarily
-  const showCooldownHint = useCallback(() => {
-    setCooldownHint(true);
-    setTimeout(() => setCooldownHint(false), 2000);
-  }, []);
-
-  // Check if action should be blocked — limits removed, always allow
-  const isBlocked = useCallback(() => {
-    return false;
-  }, []);
-
-  const handleVoiceRecordEndSync = useCallback(() => {
-    void handleVoiceRecordEnd();
-  }, [handleVoiceRecordEnd]);
-
-  const handleVoiceRecordCancel = useCallback(() => {
-    if (!isVoiceRecordingRef.current) return;
-    const wasDirectAudio = voiceUseDirectAudioRef.current;
-    isVoiceRecordingRef.current = false;
-    voiceCancelPendingRef.current = false;
-    setIsVoiceRecording(false);
-    setVoiceCancelPendingState(false);
-    if (voiceTimerRef.current) {
-      clearInterval(voiceTimerRef.current);
-      voiceTimerRef.current = null;
-    }
-    if (wasDirectAudio) {
-      directAudioReadyRef.current = null;
-      releaseMediaStream();
-    } else if (!isNative()) {
-      webSpeechSessionRef.current?.abort();
-      webSpeechSessionRef.current = null;
-    }
-    voiceUseDirectAudioRef.current = false;
-    voiceTimeRef.current = 0;
-    setVoiceTime(0);
-  }, [releaseMediaStream]);
-
   // Close camera menu on outside click
   useEffect(() => {
     if (!showCamMenu) return;
@@ -1716,41 +760,6 @@ export function AIAssistantPage({ onClose }: AIAssistantPageProps) {
       document.removeEventListener('mousedown', handleClick);
     };
   }, [showCamMenu]);
-
-  // Simple markdown renderer for analysis text
-  const renderMarkdown = (text: string) => {
-    const lines = text.split('\n');
-    return lines.map((line, i) => {
-      // Headers
-      if (line.startsWith('## ')) return <h2 key={i} className="text-base text-gray-900 mt-4 mb-2">{line.slice(3)}</h2>;
-      if (line.startsWith('### ')) return <h3 key={i} className="text-sm text-gray-800 mt-3 mb-1">{line.slice(4)}</h3>;
-      if (line.startsWith('#### ')) return <h4 key={i} className="text-xs text-gray-700 mt-2 mb-1">{line.slice(5)}</h4>;
-      // Horizontal rule
-      if (line.startsWith('---')) return <hr key={i} className="my-3 border-gray-200" />;
-      // List items
-      if (line.startsWith('- **')) {
-        const match = line.match(/^- \*\*(.+?)\*\*[：:](.*)$/);
-        if (match) return <p key={i} className="text-xs text-gray-600 ms-3 my-0.5"><span className="text-gray-800">{match[1]}</span>：{match[2]}</p>;
-      }
-      if (line.startsWith('- ')) return <p key={i} className="text-xs text-gray-600 ms-3 my-0.5">{line.slice(2)}</p>;
-      // Numbered items
-      if (/^\d+\.\s\*\*/.test(line)) {
-        const match = line.match(/^(\d+)\.\s\*\*(.+?)\*\*[：:](.*)$/);
-        if (match) return <p key={i} className="text-xs text-gray-600 ms-3 my-0.5"><span className="text-emerald-700">{match[1]}.</span> <span className="text-gray-800">{match[2]}</span>：{match[3]}</p>;
-      }
-      // Bold text
-      if (line.includes('**')) {
-        const parts = line.split(/\*\*(.+?)\*\*/g);
-        return <p key={i} className="text-xs text-gray-600 my-0.5">{parts.map((part, j) => j % 2 === 1 ? <span key={j} className="text-gray-800">{part}</span> : part)}</p>;
-      }
-      // Italic/small text
-      if (line.startsWith('*') && line.endsWith('*')) return <p key={i} className="text-[10px] text-gray-400 my-0.5 italic">{line.slice(1, -1)}</p>;
-      // Empty line
-      if (line.trim() === '') return <div key={i} className="h-1" />;
-      // Normal text
-      return <p key={i} className="text-xs text-gray-600 my-0.5">{line}</p>;
-    });
-  };
 
   // ===== 底部操作栏 — 通过 footer 插槽固定在叉号上方 =====
   const bottomBar = image ? (
@@ -1788,8 +797,8 @@ export function AIAssistantPage({ onClose }: AIAssistantPageProps) {
       {/* ═══ 聊天栏：默认语音模式，点笔切文字 ═══ */}
       {(deepAnalysisResult || (cloudOnlyMode && image)) && (
         <div className="flex flex-col gap-1 w-full">
-          {sttError && (
-            <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5">{sttError}</p>
+          {recorder.sttError && (
+            <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5">{recorder.sttError}</p>
           )}
         <div className="flex items-end gap-2">
           {/* 左侧切换按钮：语音模式显示笔(切文字)，文字模式显示麦克风(切语音) */}
@@ -1802,75 +811,13 @@ export function AIAssistantPage({ onClose }: AIAssistantPageProps) {
 
           {/* ── 语音模式：按住说话按钮 ── */}
           {inputMode === 'voice' && (
-            <div
-              className="flex-1 min-w-0 select-none"
-              style={{ height: '44px' }}
-              onTouchStart={(e) => {
-                if (!voiceEnabled || micPermissionDenied) return;
-                const touch = e.touches[0];
-                const rect = e.currentTarget.getBoundingClientRect();
-                (e.currentTarget as any).__startY = touch?.clientY || 0;
-                (e.currentTarget as any).__btnRect = rect;
-                handleVoiceRecordStart();
-              }}
-              onTouchMove={(e) => {
-                if (!isVoiceRecordingRef.current) return;
-                const touch = e.touches[0];
-                const rect = (e.currentTarget as any).__btnRect as DOMRect;
-                if (!rect || !touch) return;
-                const isOutside =
-                  touch.clientX < rect.left - 20 ||
-                  touch.clientX > rect.right + 20 ||
-                  touch.clientY < rect.top - 20 ||
-                  touch.clientY > rect.bottom + 20;
-                if (isOutside !== voiceCancelPendingRef.current) {
-                  setVoiceCancelPending(isOutside);
-                }
-              }}
-              onTouchEnd={() => handleVoiceRecordEndSync()}
-              onTouchCancel={() => handleVoiceRecordCancel()}
-              onMouseDown={() => { if (voiceEnabled && !micPermissionDenied) handleVoiceRecordStart(); }}
-              onMouseUp={() => handleVoiceRecordEndSync()}
-              onMouseLeave={() => {
-                if (isVoiceRecordingRef.current) {
-                  setVoiceCancelPending(true);
-                  handleVoiceRecordEndSync();
-                }
-              }}
-            >
-              {/* Fix 3: 麦克风权限被拒绝 */}
-              {micPermissionDenied ? (
-                <div className="bg-red-50 rounded-full text-center text-red-500 flex items-center justify-center shadow-sm" style={{ height: '44px', fontSize: 'clamp(11px, 3vw, 13px)' }}>
-                  <MicOff className="w-4 h-4 inline-block me-1.5 flex-shrink-0" />
-                  <span className="truncate">{a.micDenied || 'Microphone permission denied'}</span>
-                </div>
-              ) : !isVoiceRecording ? (
-                /* Fix 4: voiceEnabled=false 时显示禁用态 + 提示 */
-                <div className={`rounded-full text-center select-none flex items-center justify-center shadow-sm ${voiceEnabled ? 'bg-emerald-50 text-emerald-600 active:bg-emerald-500 active:text-white' : 'bg-gray-100 text-gray-400'} transition-colors`} style={{ height: '44px', fontSize: 'clamp(12px, 3.2vw, 14px)' }}>
-                  <Mic className="w-4 h-4 inline-block me-1.5 flex-shrink-0" />
-                  <span className="truncate">{voiceEnabled ? a.holdToSpeak : (deepAnalyzing ? (a.deepAnalyzing || 'Analyzing...') : (chatReplying ? (a.aiReplying || 'AI replying...') : a.holdToSpeak))}</span>
-                </div>
-              ) : (
-                <div className={`${voiceCancelPending ? 'bg-red-500' : 'bg-emerald-500'} rounded-full px-3 flex items-center gap-2 transition-colors duration-150`} style={{ height: '44px' }}>
-                  <div className="flex-1 min-w-0 flex items-center gap-2">
-                    <div className="flex items-end gap-[2px] h-4">
-                      {/* Fix 5: 使用预计算的 AI_WAVE_HEIGHTS 替代 Math.random() */}
-                      {AI_WAVE_HEIGHTS.map((h, i) => (
-                        <div key={i} className="w-[3px] bg-white/70 rounded-full" style={voiceCancelPending ? {
-                          height: `${h}px`,
-                        } : {
-                          height: `${h}px`,
-                          animation: `voiceWave 0.4s ease-in-out ${i * 0.07}s infinite alternate`
-                        }} />
-                      ))}
-                    </div>
-                    <span className="text-sm text-white font-medium tabular-nums">{voiceTime}"</span>
-                    <span className="text-[10px] text-white/60 tabular-nums">/ 60s</span>
-                  </div>
-                  <span className="text-[10px] text-white/80 flex-shrink-0">{a.releaseToSend}</span>
-                </div>
-              )}
-            </div>
+            <VoiceHoldButton
+              recorder={recorder}
+              enabled={voiceEnabled}
+              idleLabel={voiceEnabled ? a.holdToSpeak : (deepAnalyzing ? (a.deepAnalyzing || 'Analyzing...') : (chatReplying ? (a.aiReplying || 'AI replying...') : a.holdToSpeak))}
+              micDeniedLabel={a.micDenied || 'Microphone permission denied'}
+              releaseLabel={a.releaseToSend}
+            />
           )}
 
           {/* ── 文字模式：输入框 + 内嵌发送按钮 ── */}
@@ -1998,7 +945,7 @@ export function AIAssistantPage({ onClose }: AIAssistantPageProps) {
     >
       <div className={`flex flex-col ${!image && status !== 'no-model' && status !== 'ai-disabled' ? 'h-full overflow-hidden' : 'min-h-full'} ${deepAnalysisResult ? 'bg-gradient-to-b from-emerald-50 to-white' : ''}`} style={deepAnalysisResult ? {} : { backgroundColor: 'var(--app-bg)' }}>
 
-        {isProductionBuild() && cloudAiEnabled && cloudAIService.mode === "mock" && (
+        {isProductionBuild() && cloudAiEnabled && cloudAiMode === "mock" && (
           <MockModeBanner feature="ai" />
         )}
 
@@ -2181,7 +1128,7 @@ export function AIAssistantPage({ onClose }: AIAssistantPageProps) {
                             >
                               {a.aiLoginRequired}
                             </button>
-                          ) : (
+                          ) : deepErrorNoRetry ? null : (
                           <button
                             onClick={() => { autoTriggeredRef.current = false; handleCloudAnalysis(); }}
                             className="w-full flex items-center justify-center gap-2 bg-red-100 text-red-700 py-2 rounded-xl active:scale-[0.97] transition-transform text-xs font-medium"
@@ -2198,64 +1145,21 @@ export function AIAssistantPage({ onClose }: AIAssistantPageProps) {
                       <div className="flex justify-start">
                         <div 
                           className={`max-w-[85%] rounded-2xl px-3 py-2 bg-gray-100 text-gray-700 ${isRTL ? 'rounded-br-md' : 'rounded-bl-md'} cursor-pointer active:opacity-70`}
-                          onClick={() => handleAITextClick(deepAnalysisResult.analysis)}
+                          onClick={() => readAloud(deepAnalysisResult.analysis)}
                         >
-                          <div className="leading-relaxed" style={{ fontSize: 'clamp(13px, 3.5vw, 15px)' }}>{renderMarkdown(deepAnalysisResult.analysis)}</div>
+                          <div className="leading-relaxed" style={{ fontSize: 'clamp(13px, 3.5vw, 15px)' }}><AIMarkdown text={deepAnalysisResult.analysis} /></div>
                         </div>
                       </div>
                     )}
 
                     {/* 追问对话消息 */}
-                    {chatMessages.map((msg, idx) => {
-                      const isVoice = !!msg.voiceDuration;
-                      const isPlaying = playingVoiceIdx === idx;
-                      return (
-                      <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                        <div 
-                          className={`max-w-[85%] rounded-2xl px-3 py-2 ${
-                            msg.role === 'user'
-                              ? `bg-emerald-500 text-white ${isRTL ? 'rounded-bl-md' : 'rounded-br-md'}`
-                              : `bg-gray-100 text-gray-700 ${isRTL ? 'rounded-br-md' : 'rounded-bl-md'} cursor-pointer active:opacity-70`
-                          }`}
-                          onClick={() => msg.role === 'ai' && !msg.text.startsWith('⚠️') && handleAITextClick(msg.text)}
-                        >
-                          {msg.image && (
-                            <img src={msg.image} alt="" className="max-w-44 max-h-48 w-auto h-auto rounded-xl mb-1" />
-                          )}
-                          {isVoice ? (
-                            <button
-                              className="flex items-center gap-2 min-w-[80px] w-full"
-                              onClick={(e) => { e.stopPropagation(); toggleVoicePlay(idx, msg.voiceDuration!); }}
-                            >
-                              {isPlaying
-                                ? <Pause className="w-3.5 h-3.5 flex-shrink-0" />
-                                : <Play className="w-3.5 h-3.5 flex-shrink-0" fill="currentColor" />
-                              }
-                              <div className="flex items-end gap-[2px] h-4">
-                                {[1.5, 3, 2, 3.5, 1.5, 3, 2].map((h, i) => (
-                                  <div
-                                    key={i}
-                                    className={`w-[3px] rounded-full ${msg.role === 'user' ? 'bg-white/80' : 'bg-gray-500'}`}
-                                    style={isPlaying ? {
-                                      height: `${h * 4}px`,
-                                      animation: `voiceWave 0.4s ease-in-out ${i * 0.07}s infinite alternate`,
-                                    } : {
-                                      height: `${h * 4}px`,
-                                    }}
-                                  />
-                                ))}
-                              </div>
-                              <span className="text-[10px] font-semibold flex-shrink-0">{msg.voiceDuration}"</span>
-                            </button>
-                          ) : msg.role === 'ai' ? (
-                            <div className="leading-relaxed" style={{ fontSize: 'clamp(13px, 3.5vw, 15px)' }}>{renderMarkdown(msg.text)}</div>
-                          ) : msg.text ? (
-                            <p className="leading-relaxed" style={{ fontSize: 'clamp(13px, 3.5vw, 15px)' }}>{msg.text}</p>
-                          ) : null}
-                        </div>
-                      </div>
-                      );
-                    })}
+                    <AIChatMessageList
+                      messages={chatMessages}
+                      playingVoiceIdx={playingVoiceIdx}
+                      onToggleVoice={toggleVoicePlay}
+                      onSpeak={readAloud}
+                      isRTL={isRTL}
+                    />
                     {chatReplying && (
                       <div className="flex justify-start">
                         <div className={`bg-gray-100 rounded-2xl ${isRTL ? 'rounded-br-md' : 'rounded-bl-md'} px-3 py-2 flex items-center gap-1.5`}>
@@ -2367,7 +1271,7 @@ export function AIAssistantPage({ onClose }: AIAssistantPageProps) {
                           >
                             {a.aiLoginRequired}
                           </button>
-                        ) : (
+                        ) : deepErrorNoRetry ? null : (
                         <button
                           type="button"
                           onClick={() => handleDeepAnalysis()}
@@ -2410,63 +1314,20 @@ export function AIAssistantPage({ onClose }: AIAssistantPageProps) {
                         {/* Body */}
                         {deepExpanded && (
                           <div className="px-4 py-3 max-h-[400px] overflow-y-auto">
-                            {renderMarkdown(deepAnalysisResult.analysis)}
+                            <AIMarkdown text={deepAnalysisResult.analysis} />
                           </div>
                         )}
 
                         {/* Follow-up chat messages */}
                         {chatMessages.length > 0 && (
                           <div className="px-4 py-2 border-t border-gray-100 space-y-2 max-h-[300px] overflow-y-auto">
-                            {chatMessages.map((msg, idx) => {
-                              const isVoice = !!msg.voiceDuration;
-                              const isPlaying = playingVoiceIdx === idx;
-                              return (
-                              <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                                <div 
-                                  className={`max-w-[85%] rounded-2xl px-3 py-2 ${
-                                    msg.role === 'user'
-                                      ? `bg-emerald-500 text-white ${isRTL ? 'rounded-bl-md' : 'rounded-br-md'}`
-                                      : `bg-gray-100 text-gray-700 ${isRTL ? 'rounded-br-md' : 'rounded-bl-md'} cursor-pointer active:opacity-70`
-                                  }`}
-                                  onClick={() => msg.role === 'ai' && !msg.text.startsWith('⚠️') && handleAITextClick(msg.text)}
-                                >
-                                  {msg.image && (
-                                    <img src={msg.image} alt="" className="max-w-44 max-h-48 w-auto h-auto rounded-xl mb-1" />
-                                  )}
-                                  {isVoice ? (
-                                    <button
-                                      className="flex items-center gap-2 min-w-[80px] w-full"
-                                      onClick={(e) => { e.stopPropagation(); toggleVoicePlay(idx, msg.voiceDuration!); }}
-                                    >
-                                      {isPlaying
-                                        ? <Pause className="w-3.5 h-3.5 flex-shrink-0" />
-                                        : <Play className="w-3.5 h-3.5 flex-shrink-0" fill="currentColor" />
-                                      }
-                                      <div className="flex items-end gap-[2px] h-4">
-                                        {[1.5, 3, 2, 3.5, 1.5, 3, 2].map((h, i) => (
-                                          <div
-                                            key={i}
-                                            className={`w-[3px] rounded-full ${msg.role === 'user' ? 'bg-white/80' : 'bg-gray-500'}`}
-                                            style={isPlaying ? {
-                                              height: `${h * 4}px`,
-                                              animation: `voiceWave 0.4s ease-in-out ${i * 0.07}s infinite alternate`,
-                                            } : {
-                                              height: `${h * 4}px`,
-                                            }}
-                                          />
-                                        ))}
-                                      </div>
-                                      <span className="text-[10px] font-semibold flex-shrink-0">{msg.voiceDuration}"</span>
-                                    </button>
-                                  ) : msg.role === 'ai' ? (
-                                    <div className="leading-relaxed" style={{ fontSize: 'clamp(13px, 3.5vw, 15px)' }}>{renderMarkdown(msg.text)}</div>
-                                  ) : msg.text ? (
-                                    <p className="leading-relaxed" style={{ fontSize: 'clamp(13px, 3.5vw, 15px)' }}>{msg.text}</p>
-                                  ) : null}
-                                </div>
-                              </div>
-                              );
-                            })}
+                            <AIChatMessageList
+                              messages={chatMessages}
+                              playingVoiceIdx={playingVoiceIdx}
+                              onToggleVoice={toggleVoicePlay}
+                              onSpeak={readAloud}
+                              isRTL={isRTL}
+                            />
                             {chatReplying && (
                               <div className="flex justify-start">
                                 <div className={`bg-gray-100 rounded-2xl ${isRTL ? 'rounded-br-md' : 'rounded-bl-md'} px-3 py-2 flex items-center gap-1.5`}>

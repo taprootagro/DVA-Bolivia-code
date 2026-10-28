@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { RefreshCw, CheckCircle, AlertCircle, Clock } from "lucide-react";
 import { useLanguage } from "../hooks/useLanguage";
 import { createCmsTranslator } from "../i18n/cmsTranslate";
@@ -29,6 +29,13 @@ interface SyncItem {
   retryCount: number;
 }
 
+const STAT_TONE = {
+  gray: { box: "bg-gray-50", icon: "text-gray-500", value: "text-gray-900", label: "text-gray-700" },
+  blue: { box: "bg-blue-50", icon: "text-blue-500", value: "text-blue-900", label: "text-blue-700" },
+  emerald: { box: "bg-emerald-50", icon: "text-emerald-500", value: "text-emerald-900", label: "text-emerald-700" },
+  red: { box: "bg-red-50", icon: "text-red-500", value: "text-red-900", label: "text-red-700" },
+} as const;
+
 export function BackgroundSync() {
   const { t, language } = useLanguage();
   const ct = createCmsTranslator(t, language, enTranslations);
@@ -38,6 +45,11 @@ export function BackgroundSync() {
   const [syncQueue, setSyncQueue] = useState<SyncItem[]>([]);
   const [isSyncing, setIsSyncing] = useState(false);
   const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null);
+  // Source of truth for the queue: manualSync spans awaits and the online listener outlives renders,
+  // so reading the `syncQueue` closure would overwrite earlier updates.
+  const syncQueueRef = useRef<SyncItem[]>([]);
+  const syncingRef = useRef(false);
+  const triggerSyncRef = useRef<() => Promise<void>>(async () => {});
 
   // Check browser support
   useEffect(() => {
@@ -51,7 +63,7 @@ export function BackgroundSync() {
   useEffect(() => {
     const handleOnline = () => {
       setIsOnline(true);
-      triggerBackgroundSync();
+      void triggerSyncRef.current();
     };
     const handleOffline = () => setIsOnline(false);
 
@@ -70,9 +82,16 @@ export function BackgroundSync() {
     return () => clearInterval(interval);
   }, []);
 
+  const replaceQueue = (queue: SyncItem[]) => {
+    syncQueueRef.current = queue;
+    setSyncQueue(queue);
+  };
+
   const loadSyncQueue = () => {
+    if (syncingRef.current) return;
     dbLoadSyncQueue()
       .then((records) => {
+        if (syncingRef.current) return;
         const queue: SyncItem[] = records.map((r) => ({
           id: r.id,
           type: r.type as SyncItem["type"],
@@ -90,16 +109,17 @@ export function BackgroundSync() {
           status: r.status as SyncItem["status"],
           retryCount: r.retryCount,
         }));
-        setSyncQueue(queue);
+        replaceQueue(queue);
       })
       .catch(() => {
         const stored = storageGetJSON<SyncItem[]>("taproot-sync-queue");
-        if (stored) setSyncQueue(stored);
+        if (stored) replaceQueue(stored);
       });
   };
 
-  const saveSyncQueue = (queue: SyncItem[]) => {
-    setSyncQueue(queue);
+  const updateQueue = (fn: (prev: SyncItem[]) => SyncItem[]) => {
+    const queue = fn(syncQueueRef.current);
+    replaceQueue(queue);
     const records: SyncQueueRecord[] = queue.map((item) => ({
       id: item.id,
       type: item.type,
@@ -125,13 +145,16 @@ export function BackgroundSync() {
     }
   };
 
+  triggerSyncRef.current = triggerBackgroundSync;
+
   const manualSync = async () => {
-    if (isSyncing || !isOnline) return;
-    const pendingItems = syncQueue.filter(
+    if (syncingRef.current || !navigator.onLine) return;
+    const pendingItems = syncQueueRef.current.filter(
       (item) => item.status === "pending" || item.status === "failed"
     );
     if (pendingItems.length === 0) return;
 
+    syncingRef.current = true;
     setIsSyncing(true);
     try {
       for (const item of pendingItems) {
@@ -151,6 +174,7 @@ export function BackgroundSync() {
       setLastSyncTime(new Date());
       setTimeout(cleanupSuccessItems, 5000);
     } finally {
+      syncingRef.current = false;
       setIsSyncing(false);
     }
   };
@@ -173,23 +197,23 @@ export function BackgroundSync() {
   };
 
   const updateItemStatus = (id: string, status: SyncItem["status"]) => {
-    const newQueue = syncQueue.map((item) =>
-      item.id === id ? { ...item, status } : item
+    updateQueue((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, status } : item))
     );
-    saveSyncQueue(newQueue);
   };
 
   const updateItemRetry = (id: string, retryCount: number) => {
-    const newQueue = syncQueue.map((item) =>
-      item.id === id
-        ? { ...item, retryCount, status: "pending" as const }
-        : item
+    updateQueue((prev) =>
+      prev.map((item) =>
+        item.id === id
+          ? { ...item, retryCount, status: "pending" as const }
+          : item
+      )
     );
-    saveSyncQueue(newQueue);
   };
 
   const cleanupSuccessItems = () => {
-    const successItems = syncQueue.filter((item) => item.status === "success");
+    const successItems = syncQueueRef.current.filter((item) => item.status === "success");
     if (successItems.length > 10) {
       const toKeepIds = new Set(
         successItems
@@ -197,8 +221,8 @@ export function BackgroundSync() {
           .slice(0, 10)
           .map((i) => i.id)
       );
-      saveSyncQueue(
-        syncQueue.filter(
+      updateQueue((prev) =>
+        prev.filter(
           (item) => item.status !== "success" || toKeepIds.has(item.id)
         )
       );
@@ -206,18 +230,18 @@ export function BackgroundSync() {
   };
 
   const clearCompleted = () => {
-    saveSyncQueue(syncQueue.filter((item) => item.status !== "success"));
+    updateQueue((prev) => prev.filter((item) => item.status !== "success"));
   };
 
   const retryFailed = () => {
-    saveSyncQueue(
-      syncQueue.map((item) =>
+    updateQueue((prev) =>
+      prev.map((item) =>
         item.status === "failed"
           ? { ...item, status: "pending" as const, retryCount: 0 }
           : item
       )
     );
-    triggerBackgroundSync();
+    void triggerBackgroundSync();
   };
 
   const stats = {
@@ -310,44 +334,44 @@ export function BackgroundSync() {
             icon: Clock,
             value: stats.pending,
             label: ct("messages.pending", "待同步", "Pending"),
-            color: "gray",
+            tone: STAT_TONE.gray,
           },
           {
             icon: RefreshCw,
             value: stats.syncing,
             label: ct("messages.syncing", "同步中", "Syncing"),
-            color: "blue",
+            tone: STAT_TONE.blue,
           },
           {
             icon: CheckCircle,
             value: stats.success,
             label: ct("messages.done", "已完成", "Done"),
-            color: "emerald",
+            tone: STAT_TONE.emerald,
           },
           {
             icon: AlertCircle,
             value: stats.failed,
             label: ct("messages.failed_1", "失败", "Failed"),
-            color: "red",
+            tone: STAT_TONE.red,
           },
-        ].map(({ icon: Icon, value, label, color }) => (
+        ].map(({ icon: Icon, value, label, tone }) => (
           <div
             key={label}
-            className={`bg-${color}-50 rounded-lg text-center`}
+            className={`${tone.box} rounded-lg text-center`}
             style={{ padding: "clamp(8px, 2vw, 10px)" }}
           >
             <Icon
-              className={`text-${color}-500 mx-auto mb-1`}
+              className={`${tone.icon} mx-auto mb-1`}
               style={{ width: "16px", height: "16px" }}
             />
             <p
-              className={`text-${color}-900 font-bold`}
+              className={`${tone.value} font-bold`}
               style={{ fontSize: "clamp(14px, 4vw, 18px)" }}
             >
               {value}
             </p>
             <p
-              className={`text-${color}-700`}
+              className={tone.label}
               style={{ fontSize: "clamp(9px, 2.5vw, 10px)" }}
             >
               {label}

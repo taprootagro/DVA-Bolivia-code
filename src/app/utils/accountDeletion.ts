@@ -80,8 +80,7 @@ export async function deleteAccount(): Promise<DeleteAccountResult> {
 
   const endpoint = getAccountDeleteEndpoint();
   if (!endpoint) {
-    await clearLocalAccountData();
-    return { ok: true };
+    return { ok: false, error: "backend_unavailable" };
   }
 
   const token = await ensureEdgeSessionReady();

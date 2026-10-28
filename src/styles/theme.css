@@ -262,8 +262,8 @@
 
   @media (display-mode: standalone) {
     .safe-bottom {
-      /* 削减 safe-area：减掉 32px，iPhone 11 约剩 2px，紧贴 home indicator */
-      padding-bottom: max(calc(env(safe-area-inset-bottom, 0px) - 32px), 2px);
+      /* 白底铺满手势区，和 dock 连成一块；图标仍在安全区上方 */
+      padding-bottom: max(env(safe-area-inset-bottom, 0px), 2px);
     }
   }
 
@@ -280,7 +280,7 @@
 
   @media (display-mode: standalone) {
     .pb-safe-nav {
-      padding-bottom: calc(44px + max(calc(env(safe-area-inset-bottom, 0px) - 32px), 2px));
+      padding-bottom: calc(44px + max(env(safe-area-inset-bottom, 0px), 2px));
     }
   }
 
@@ -296,6 +296,14 @@
 
   html[data-native] body {
     background-color: #ffffff;
+  }
+
+  /* 已安装 PWA：状态栏用 theme-color 绿色；手势条底下露出的页面底色保持白 */
+  @media (display-mode: standalone) {
+    html,
+    body {
+      background-color: #ffffff;
+    }
   }
 
   /* 富文本编辑器（TipTap / ProseMirror） */

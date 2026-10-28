@@ -48,6 +48,14 @@ describe("cloud AI image size guard", () => {
     compressSpy.mockRestore();
   });
 
+  it("prepareImageForCloudAI rejects when still above max after compress", async () => {
+    const huge = dataUrlOfApproxBytes(400 * 1024);
+    const stillHuge = dataUrlOfApproxBytes(400 * 1024);
+    const compressSpy = vi.spyOn(cloudAIGuard, "compressImage").mockResolvedValue(stillHuge);
+    await expect(prepareImageForCloudAI(huge)).rejects.toThrow("IMAGE_TOO_LARGE");
+    compressSpy.mockRestore();
+  });
+
   it("documents AI vision max byte cap only", () => {
     expect(AI_VISION_IMAGE_LIMITS.maxBytes).toBe(250 * 1024);
     expect("minBytes" in AI_VISION_IMAGE_LIMITS).toBe(false);

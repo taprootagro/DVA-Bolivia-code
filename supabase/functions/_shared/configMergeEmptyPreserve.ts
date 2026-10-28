@@ -48,7 +48,8 @@ function mergeValue(inc: unknown, prev: unknown, key: string): unknown {
  * @param incoming POST body config
  * @param previous existing DB config (null if first insert)
  */
-export function mergeConfigPreserveEmptyMediaUrls(
+/** Empty strings in the incoming payload overwrite previous values (including media URLs). */
+export function mergeConfigEmptyStringOverwrites(
   incoming: unknown,
   previous: unknown,
 ): unknown {
@@ -57,3 +58,6 @@ export function mergeConfigPreserveEmptyMediaUrls(
   }
   return mergeValue(incoming, previous, "");
 }
+
+/** @deprecated name kept for existing Edge imports — empty string overwrites, not "preserve". */
+export const mergeConfigPreserveEmptyMediaUrls = mergeConfigEmptyStringOverwrites;

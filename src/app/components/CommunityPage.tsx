@@ -5,10 +5,9 @@ import { useLanguage } from "../hooks/useLanguage";
 import { useChatMessages } from "./community/hooks/useChatMessages";
 import { useVoiceSystem } from "./community/hooks/useVoiceSystem";
 import { useMerchantBind } from "./community/hooks/useMerchantBind";
-import { ChatInputBar } from "./community/ChatInputBar";
 import { ChatPeerAvatar } from "./community/ChatPeerAvatar";
 import { MessageBubble } from "./community/MessageBubble";
-import { ImageViewer } from "./community/ImageViewer";
+import { ChatThreadView } from "./community/ChatThreadView";
 import { useConfigContext } from "../hooks/ConfigProvider";
 import { useEdgeProfile } from "../hooks/useEdgeProfile";
 import { StoreCommunityShell } from "./community/StoreCommunityShell";
@@ -19,8 +18,8 @@ import { setChatUnreadCount } from "../utils/storeChatUnread";
 import { useIsCommunityActive } from "../utils/chatTabActive";
 import { type ChatMessage } from "../services/ChatProxyService";
 import { isUserLoggedIn, getUserId } from "../utils/auth";
+import { kvGet, kvPut } from "../utils/db";
 import { readEdgeProfileCache } from "../utils/edgeProfileCache";
-import { MockModeBanner } from "./MockModeBanner";
 import { isProductionBuild } from "../utils/productionGuard";
 import { chatService } from "../services/ChatProxyService";
 import {
@@ -28,7 +27,7 @@ import {
   writeCommunityRoleCache,
   clearStoreShellState,
 } from "../utils/chatTabPersistence";
-import { Virtuoso, VirtuosoHandle } from "react-virtuoso";
+import { type VirtuosoHandle } from "react-virtuoso";
 
 // ---- 按需加载重型弹窗组件 ----
 const LazyCallDialog = lazy(() =>
@@ -76,7 +75,15 @@ export function CommunityPage() {
 
   const fallbackStore = config?.communityUiMode === "store";
   const resolvedDistributor = profileError
-    ? fallbackStore
+    ? communityCached === "distributor"
+      ? true
+      : communityCached === "farmer"
+        ? false
+        : edgeCached?.appRole === "distributor"
+          ? true
+          : edgeCached?.appRole === "farmer"
+            ? false
+            : fallbackStore
     : appRole === "distributor";
   const targetMode = resolvedDistributor ? "distributor" : "farmer";
 
@@ -146,56 +153,85 @@ export function CommunityPage() {
 }
 
 // ============================================================================
-// Virtuoso Header / Footer — 提升到模块级避免每次渲染重建组件引用
-// ============================================================================
-function VirtuosoFooter() {
-  return <div className="h-2" />;
-}
-
-// ============================================================================
 // Chat UI — only rendered after login (safe to use hooks)
 // ============================================================================
 function CommunityChat() {
   const { t, isRTL } = useLanguage();
   const { config, saveConfig } = useConfigContext();
-  // 聊天页状态栏颜色与顶部绿色一致
-  useEffect(() => {
-    const meta = document.querySelector('meta[name="theme-color"]');
-    const prev = meta?.getAttribute('content') || '#059669';
-    meta?.setAttribute('content', '#059669');
-    return () => { meta?.setAttribute('content', prev); };
-  }, []);
 
-  // Cross-device rehydrate: if local config has no bound merchant, pull the
-  // latest farmer_merchant_bindings row from Supabase (RLS isolates per farmer).
+  const configRef = useRef(config);
+  configRef.current = config;
+  const merchantUserId = config?.chatContact?.merchantUserId;
+  const boundChannelId = config?.chatContact?.channelId;
+  // 联网时以云端绑定为准；本地占位/过期绑定时清空并恢复。
   useEffect(() => {
+    const config = configRef.current;
     if (!config) return;
-    const cc = config.chatContact;
-    if (cc?.merchantUserId && cc?.channelId) return;
     let cancelled = false;
     void (async () => {
       try {
-        const { findLatestBinding } = await import("../services/farmerBindingRepo");
+        const {
+          findLatestBinding,
+          verifyChannelReadAccess,
+        } = await import("../services/farmerBindingRepo");
+        const cc = config.chatContact;
+        const localMerchant = cc?.merchantUserId?.trim() || "";
+        const localChannel = cc?.channelId?.trim() || "";
+        const localBound =
+          !!localMerchant &&
+          !!localChannel &&
+          localChannel !== "your-channel-id";
+
         const latest = await findLatestBinding();
-        if (cancelled || !latest) return;
-        saveConfig({
-          ...config,
-          chatContact: {
-            ...config.chatContact,
-            merchantUserId: latest.merchantUserId,
-            channelId: latest.channelId,
-            name: latest.name || config.chatContact.name,
-            avatar: latest.avatar || config.chatContact.avatar,
-            subtitle: "",
-            boundAt: Date.parse(latest.createdAt) || Date.now(),
-          },
-        });
+        if (cancelled) return;
+
+        const applyBinding = (binding: NonNullable<Awaited<ReturnType<typeof findLatestBinding>>>) => {
+          saveConfig({
+            ...config,
+            chatContact: {
+              ...config.chatContact,
+              merchantUserId: binding.merchantUserId,
+              channelId: binding.channelId,
+              name: binding.name || config.chatContact.name,
+              avatar: binding.avatar || config.chatContact.avatar,
+              subtitle: binding.subtitle || "",
+              boundAt: Date.parse(binding.createdAt) || Date.now(),
+            },
+          });
+        };
+
+        if (latest) {
+          const same =
+            latest.merchantUserId === localMerchant &&
+            latest.channelId === localChannel;
+          if (!same) applyBinding(latest);
+          return;
+        }
+
+        if (!localBound) return;
+
+        const access = await verifyChannelReadAccess(localChannel);
+        if (cancelled) return;
+        if (access === "forbidden") {
+          saveConfig({
+            ...config,
+            chatContact: {
+              ...config.chatContact,
+              merchantUserId: "",
+              channelId: "",
+              name: "",
+              avatar: "",
+              subtitle: "",
+              boundAt: 0,
+            },
+          });
+        }
       } catch (e) {
         console.warn("[CommunityChat] rehydrate binding", e);
       }
     })();
     return () => { cancelled = true; };
-  }, [config, saveConfig]);
+  }, [merchantUserId, boundChannelId, saveConfig]);
 
   const {
     showScanner,
@@ -216,7 +252,32 @@ function CommunityChat() {
   const communityActive = useIsCommunityActive();
   const communityActiveRef = useRef(communityActive);
   communityActiveRef.current = communityActive;
+  const farmerUserId = getUserId();
+  const unreadKey = farmerUserId ? `farmerChatUnread:${farmerUserId}` : "";
   const [unread, setUnread] = useState(0);
+  const unreadHydratedRef = useRef(false);
+
+  useEffect(() => {
+    if (!unreadKey) return;
+    let cancelled = false;
+    unreadHydratedRef.current = false;
+    void kvGet(unreadKey).then((raw) => {
+      if (cancelled) return;
+      const n = Number.parseInt(raw || "0", 10);
+      if (Number.isFinite(n) && n > 0) {
+        setUnread((cur) => Math.max(cur, n));
+      }
+      unreadHydratedRef.current = true;
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [unreadKey]);
+
+  useEffect(() => {
+    if (!unreadKey || !unreadHydratedRef.current) return;
+    void kvPut(unreadKey, String(unread));
+  }, [unread, unreadKey]);
 
   const onDirectoryActivity = useCallback(
     (args: { preview: string; incoming: boolean }) => {
@@ -331,21 +392,6 @@ function CommunityChat() {
     setMerchantBindEverShown(true);
   }, [setShowScanActionSheet]);
 
-  // ---- Virtuoso 渲染稳定化 ----
-  // 简单的顶部间距
-  const VirtuosoHeader = useMemo(() => {
-    return function Header() {
-      return <div className="h-2" />;
-    };
-  }, []);
-
-  // Virtuoso components 对象引用稳定化
-  const virtuosoComponents = useMemo(() => ({
-    Header: VirtuosoHeader,
-    Footer: VirtuosoFooter,
-  }), [VirtuosoHeader]);
-
-  // itemContent 回调：只在核心依赖变化时重建
   const renderItem = useCallback((_index: number, msg: Message) => (
     <div className="pb-2.5">
       <MessageBubble
@@ -367,11 +413,6 @@ function CommunityChat() {
 
   return (
     <div className="flex flex-col h-full min-h-0 bg-gradient-to-b from-emerald-50 to-white">
-      {/* 全屏图片查看器 */}
-      {viewingImage && (
-        <ImageViewer src={viewingImage} onClose={() => setViewingImage(null)} />
-      )}
-
       {/* 商户绑定：扫码器 + 扫码结果弹窗 + Action Sheet (按需加载) */}
       {needsMerchantBind && (
         <Suspense fallback={null}>
@@ -445,40 +486,24 @@ function CommunityChat() {
         </div>
       </div>
 
-      {/* 聊天区域 */}
-      <div className="flex-1 bg-white rounded-t-3xl -mt-4 flex flex-col overflow-hidden min-h-0 shadow-2xl">
-        {showChatMockBanner && <MockModeBanner feature="chat" />}
-        {realtimeError && (
-          <div className="px-3 py-2 bg-red-50 border-b border-red-100 text-red-800 text-xs">
-            {realtimeError}
-          </div>
-        )}
-        <div className="flex-1 px-4 py-4 min-h-0">
-          <Virtuoso
-            ref={virtuosoRef}
-            data={chatMessages}
-            firstItemIndex={firstItemIndex}
-            computeItemKey={(_index, msg) => msg.id}
-            initialTopMostItemIndex={Math.max(0, chatMessages.length - 1)}
-            components={virtuosoComponents}
-            itemContent={renderItem}
-            followOutput="smooth"
-            alignToBottom
-            startReached={handleStartReached}
-          />
-        </div>
-
-        {/* 底部输入栏 */}
-        <ChatInputBar
-          onSendText={sendTextMessage}
-          onSendVoice={sendVoiceMessage}
-          onSendImage={sendImageMessage}
-          onCall={handleCall}
-          isSending={isSending}
-          callsEnabled={callsEnabled}
-          adjoinDock
-        />
-      </div>
+      <ChatThreadView
+        className="flex-1 bg-white rounded-t-3xl -mt-4 flex flex-col overflow-hidden min-h-0 shadow-2xl"
+        chatMessages={chatMessages}
+        firstItemIndex={firstItemIndex}
+        virtuosoRef={virtuosoRef}
+        renderItem={renderItem}
+        onStartReached={handleStartReached}
+        realtimeError={realtimeError}
+        showChatMockBanner={showChatMockBanner}
+        viewingImage={viewingImage}
+        onCloseImage={() => setViewingImage(null)}
+        onSendText={sendTextMessage}
+        onSendVoice={sendVoiceMessage}
+        onSendImage={sendImageMessage}
+        onCall={handleCall}
+        isSending={isSending}
+        callsEnabled={callsEnabled}
+      />
     </div>
   );
 }

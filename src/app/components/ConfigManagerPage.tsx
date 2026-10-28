@@ -1,45 +1,39 @@
 import { useNavigate } from "react-router";
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { useConfigContext } from "../hooks/ConfigProvider";
 import { useContentSuperAdmin } from "../hooks/useContentSuperAdmin";
-import type { CmsStorageProvider, HomePageConfig } from "../hooks/useHomeConfig";
+import type { HomePageConfig } from "../hooks/useHomeConfig";
 import { CONFIG_STORAGE_KEY } from "../constants";
 import { storageGetJSON } from "../utils/safeStorage";
 import { pauseConfigRemotePull, resumeConfigRemotePull } from "../utils/configRemotePullPause";
 import { useLanguage } from "../hooks/useLanguage";
 import { createCmsTranslator } from "../i18n/cmsTranslate";
 import enTranslations from "../i18n/lang/en";
-import { ArrowLeft, Plus, Trash2, Save, Edit3, RotateCcw, ChevronDown, ChevronRight, Shield, X, Menu, RefreshCw, Cloud, CloudOff, CloudUpload, AlertTriangle, CheckCircle2, Loader2, Eye, Download } from "lucide-react";
-import readXlsxFile from "read-excel-file";
+import { ArrowLeft, Plus, Trash2, Save, Edit3, RotateCcw, ChevronDown, X, Menu, RefreshCw, CloudUpload, AlertTriangle, CheckCircle2, Loader2, Eye } from "lucide-react";
 import { RichTextEditor } from "./RichTextEditor";
-import {
-  testConnection as supabaseTestConnection,
-  isSupabaseConfigured,
-  type TestConnectionResult,
-} from "../services/ConfigSyncService";
+import { isSupabaseConfigured } from "../services/ConfigSyncService";
 import { CmsStorageUploadRow } from "./CmsStorageUploadRow";
 import { CmsMediaImg } from "./CmsMediaImg";
 import { CmsVideoUrlEmbedPreview } from "./CmsVideoUrlEmbedPreview";
 import { renderPwaIconsFromImageFile } from "../utils/pwaAppIconRender";
 import { uploadFileToCmsPublic } from "../utils/cmsPublicUpload";
-import { ensureEdgeSessionReady } from "../utils/auth";
 import { isDeveloperMode } from "../utils/developerMode";
 import SortableList from "./SortableList";
+import { CmsListEditor } from "./cms/CmsListEditor";
+import { emptyBackendProxyShell, patchConfigSection, type PatchSection } from "./cms/cmsTab";
+import { edgeFnAuth } from "./cms/edgeFnAuth";
+
+const AiModelTab = React.lazy(() => import("./cms/AiModelTab"));
+const SupabaseTab = React.lazy(() => import("./cms/SupabaseTab"));
+const LoginConfigTab = React.lazy(() => import("./cms/LoginConfigTab"));
+const PushProvidersTab = React.lazy(() => import("./cms/PushProvidersTab"));
+const UserRolesTab = React.lazy(() => import("./cms/UserRolesTab"));
+
+const cmsTabFallback = (
+  <div className="py-10 flex justify-center"><Loader2 className="w-5 h-5 animate-spin text-gray-400" /></div>
+);
 
 const MAX_PWA_SOURCE_IMAGE_BYTES = 15 * 1024 * 1024;
-
-/** Filled when pasting into workingConfig if backendProxy missing */
-function emptyBackendProxyShell(): NonNullable<HomePageConfig["backendProxyConfig"]> {
-  return {
-    supabaseUrl: "",
-    supabaseAnonKey: "",
-    enabled: false,
-    chatProvider: "supabase",
-    imMode: "im-provider-direct",
-    cmsStorageProvider: "supabase",
-    mediaCdnBaseUrl: "",
-  };
-}
 
 function PwaIconInstallPreview({
   icon192Url,
@@ -103,67 +97,6 @@ function entityIdsMatch(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (a == null || b == null) return false;
   return String(a) === String(b);
-}
-
-const UUID_RE_CLIENT =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-/** 模板里的示例 UUID；上传导入时会跳过，避免误写入。 */
-const ROLE_IMPORT_EXAMPLE_UUID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-
-function escapeCsvCell(v: unknown): string {
-  const s = String(v ?? "");
-  if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
-  return s;
-}
-
-/** 表头：取「（」或「(」前的主 key，再压成与导入别名一致的 stem（如 user_id → userid）。 */
-function roleImportHeaderStem(cell: unknown): string {
-  let s = String(cell ?? "").trim().toLowerCase();
-  for (const sep of ["（", "("]) {
-    const i = s.indexOf(sep);
-    if (i >= 0) {
-      s = s.slice(0, i).trim();
-      break;
-    }
-  }
-  return s.replace(/_/g, "").replace(/\s+/g, "");
-}
-
-/** First spreadsheet row: need user_id (aliases), optional content_role / app_role. */
-function detectRoleImportColumns(headerRow: unknown[]): { userIdx: number; contentIdx: number; appIdx: number } | null {
-  let userIdx = -1;
-  let contentIdx = -1;
-  let appIdx = -1;
-  const userKeys = new Set(["userid", "uuid", "user"]);
-  const contentKeys = new Set(["contentrole", "cmsrole"]);
-  const appKeys = new Set(["approle", "storerole"]);
-  headerRow.forEach((cell, i) => {
-    const k = roleImportHeaderStem(cell);
-    if (userKeys.has(k)) userIdx = i;
-    else if (contentKeys.has(k)) contentIdx = i;
-    else if (appKeys.has(k)) appIdx = i;
-  });
-  if (userIdx < 0) return null;
-  return { userIdx, contentIdx, appIdx };
-}
-
-function parseExcelContentRoleCell(raw: unknown): "none" | "editor" | null {
-  if (raw === null || raw === undefined) return null;
-  const s = String(raw).trim().toLowerCase();
-  if (!s) return null;
-  if (s === "none" || s === "clear" || s === "revoke" || s === "无" || s === "無") return "none";
-  if (s === "editor" || s === "编辑" || s === "編輯") return "editor";
-  return null;
-}
-
-function parseExcelAppRoleCell(raw: unknown): "farmer" | "distributor" | null {
-  if (raw === null || raw === undefined) return null;
-  const s = String(raw).trim().toLowerCase();
-  if (!s) return null;
-  if (s === "farmer" || s === "农户" || s === "農戶") return "farmer";
-  if (s === "distributor" || s === "门店" || s === "分销商") return "distributor";
-  return null;
 }
 
 function ensureMarketPageOnConfig(cfg: Record<string, unknown>): void {
@@ -236,8 +169,6 @@ export default function ConfigManagerPage() {
     pullRemoteConfig,
     syncStatus,
     remoteVersion,
-    lastSyncTime,
-    lastSyncError,
     isRemoteConfigured,
   } = useConfigContext();
   const { t, language } = useLanguage();
@@ -250,17 +181,11 @@ export default function ConfigManagerPage() {
     return () => cancelAnimationFrame(raf);
   }, []);
 
-  const [activeTab, setActiveTab] = useState<"supabase" | "banners" | "live" | "articles" | "market" | "marketCategories" | "marketProducts" | "marketAd" | "filing" | "aboutUs" | "privacy" | "terms" | "technicalSupport" | "appBranding" | "splashScreen" | "homeIcons" | "chatContact" | "desktopIcon" | "aiModel" | "backendProxy" | "loginConfig" | "pushProviders" | "pushNotification" | "userRoles">("banners");
+  const [activeTab, setActiveTab] = useState<"supabase" | "banners" | "live" | "articles" | "market" | "filing" | "aboutUs" | "privacy" | "terms" | "technicalSupport" | "appBranding" | "splashScreen" | "homeIcons" | "chatContact" | "desktopIcon" | "aiModel" | "backendProxy" | "loginConfig" | "pushProviders" | "pushNotification" | "userRoles">("banners");
   const [pushSendStatus, setPushSendStatus] = useState<"idle" | "sending" | "done">("idle");
   const [pushSendResult, setPushSendResult] = useState<{ sent: number; total: number; errors: number; results: string[] } | null>(null);
   const [pushForm, setPushForm] = useState({ title: "", body: "", url: "" });
   const [pushConfirmOpen, setPushConfirmOpen] = useState(false);
-  const roleExcelInputRef = useRef<HTMLInputElement>(null);
-  const [roleApplyBusy, setRoleApplyBusy] = useState(false);
-  const [roleBulkResult, setRoleBulkResult] = useState<string | null>(null);
-  const [roleSingleUserId, setRoleSingleUserId] = useState("");
-  const [roleSingleContent, setRoleSingleContent] = useState<"" | "none" | "editor">("");
-  const [roleSingleApp, setRoleSingleApp] = useState<"" | "farmer" | "distributor">("");
   const [editingItem, setEditingItem] = useState<any>(null);
   const [hasChanges, setHasChanges] = useState(false);
   // 市场 Dock 布局状态
@@ -270,6 +195,31 @@ export default function ConfigManagerPage() {
   hasChangesRef.current = hasChanges;
   // 本地工作副本：所有编辑操作只修改此副本，不立即持久化
   const [workingConfig, setWorkingConfig] = useState(() => JSON.parse(JSON.stringify(config)));
+  const patchSection = useCallback<PatchSection>((key, partial) => {
+    setWorkingConfig((prev: HomePageConfig) => patchConfigSection(prev, key, partial));
+    setHasChanges(true);
+  }, []);
+  /** Whole-value replace for array sections (banners / liveStreams / articles), which patchSection can't merge. */
+  const replaceSection = <K extends keyof HomePageConfig>(key: K, value: HomePageConfig[K]) => {
+    setWorkingConfig((prev: HomePageConfig) => ({ ...prev, [key]: value }));
+    setHasChanges(true);
+  };
+  /** Same defaults as ensureMarketPageOnConfig when marketPage is missing or malformed. */
+  const patchMarketPage = (partial: Partial<HomePageConfig["marketPage"]>) => {
+    setWorkingConfig((prev: HomePageConfig) => {
+      const mp = prev.marketPage && typeof prev.marketPage === "object" ? prev.marketPage : undefined;
+      return {
+        ...prev,
+        marketPage: {
+          categories: Array.isArray(mp?.categories) ? mp.categories : [],
+          products: Array.isArray(mp?.products) ? mp.products : [],
+          advertisements: Array.isArray(mp?.advertisements) ? mp.advertisements : [],
+          ...partial,
+        },
+      };
+    });
+    setHasChanges(true);
+  };
   // 打开内容管理器期间暂停「回到前台自动拉配置」，避免未推送的编辑被远程合并冲掉
   useEffect(() => {
     pauseConfigRemotePull();
@@ -316,271 +266,11 @@ export default function ConfigManagerPage() {
   const [pwaIconBusy, setPwaIconBusy] = useState(false);
   const [pwaIconErr, setPwaIconErr] = useState<string | null>(null);
 
-  const [supabaseTestLoading, setSupabaseTestLoading] = useState(false);
-  const [supabaseTestMessage, setSupabaseTestMessage] = useState<{
-    kind: "ok" | "warn" | "err";
-    text: string;
-  } | null>(null);
-  const supabaseTestMessageRef = useRef<HTMLParagraphElement>(null);
-
   const ct = createCmsTranslator(t, language, enTranslations);
 
   /** 内容管理器 → 发送通知（全语言走 i18n，与 en 合并兜底） */
   const cfgPush = (t.configManager?.pushNotification ?? {}) as Record<string, string>;
   const pushT = (key: string) => (typeof cfgPush[key] === "string" ? cfgPush[key] : "");
-
-  /** 测试连接失败时的可读说明 + 可选技术细节 */
-  const formatSupabaseTestFailure = (result: TestConnectionResult): string => {
-    const detail = (result.error || "").trim();
-    const appendDetail = (friendly: string) =>
-      detail && detail.length > 0 ? `${friendly}\n${detail.slice(0, 280)}` : friendly;
-
-    switch (result.hintKey) {
-      case "missing_field":
-        return ct("messages.please_enter_project_url_and_anon_key", "请填写 Project URL 和 Anon Key。", "Please enter Project URL and Anon Key.");
-      case "placeholder":
-        return ct("messages.replace_placeholders_with_the_real_project_url_and", "请替换占位符，使用 Supabase Dashboard → Settings → API 中的真实 Project URL 与 anon public key。", "Replace placeholders with the real Project URL and anon public key from Dashboard → Settings → API.");
-      case "invalid_url":
-        return ct("messages.invalid_project_url_must_be_a_full_https", "Project URL 格式无效（需为 https:// 开头的完整地址）。", "Invalid Project URL (must be a full https:// URL).");
-      case "key_too_short":
-        return ct("messages.url_or_anon_key_is_too_short_copy", "Anon Key 或 URL 过短。请从 Dashboard 完整复制 anon public key（通常为一长段 JWT）。", "URL or anon key is too short. Copy the full anon public key from Dashboard (usually a long JWT).");
-      case "invalid_key_format":
-        return ct("messages.anon_key_must_be_legacy_jwt_eyj_three", "Anon Key 格式不对：应为旧版 JWT（eyJ…，三段点分隔）或新版 sb_publishable_…。请从 Dashboard → API 复制 publishable / anon public。", "Anon key must be legacy JWT (eyJ… three segments) or new sb_publishable_…. Copy publishable / anon public from Dashboard → API.");
-      case "unauthorized":
-        return appendDetail(
-          ct("messages.m_401_403_verify_the_anon_key_matches_this", "401/403：网关拒绝访问。请核对 anon key 是否与该项目一致，且使用 anon public（勿使用 service_role）。", "401/403: Verify the anon key matches this project and use anon public (not service_role)."),
-        );
-      case "edge_not_found":
-        return appendDetail(
-          ct("messages.m_404_edge_function_not_found_deploy_the_server", "404：未找到 Edge Function。请确认已部署 server 函数、Project URL 与函数名是否正确。", "404: Edge Function not found. Deploy the server function and verify URL and function name."),
-        );
-      case "timeout":
-        return appendDetail(
-          ct("messages.request_timed_out_15s_check_network_and_url", "请求超时（15 秒）。请检查网络、URL 是否正确，或稍后重试。", "Request timed out (15s). Check network and URL, or retry later."),
-        );
-      case "network":
-        return appendDetail(
-          ct("messages.cannot_reach_the_server_network_error_check_connectivity", "无法连接到服务器（网络错误）。请检查网络、防火墙或域名是否可达。", "Cannot reach the server (network error). Check connectivity and firewall."),
-        );
-      default:
-        return appendDetail(
-          ct(`连接失败${detail ? "：" + detail : "。"}`, `Connection failed${detail ? ": " + detail : "."}`),
-        );
-    }
-  };
-
-  const getEdgeFnAuth = async () => {
-    const bp = (workingConfig as any)?.backendProxyConfig;
-    const url = (bp?.supabaseUrl || "").trim().replace(/\/$/, "");
-    const anon = (bp?.supabaseAnonKey || "").trim();
-    const fn = (bp?.edgeFunctionName || "server").trim() || "server";
-    if (!url || !anon) return null;
-    const base = `${url}/functions/v1/${fn}`;
-    const token = (await ensureEdgeSessionReady()) ?? "";
-    return { base, anon, token };
-  };
-
-  const postUserRoleRows = async (
-    rows: Array<Record<string, string>>,
-  ): Promise<Array<{ userId: string; ok: boolean; error?: string }> | null> => {
-    const auth = await getEdgeFnAuth();
-    if (!auth) {
-      alert(ct("messages.configure_server_connection_first", "请先配置服务器连接", "Configure server connection first"));
-      return null;
-    }
-    if (!auth.token) {
-      alert(ct("messages.sign_in_with_supabase_first", "请先登录 Supabase 会话", "Sign in with Supabase first"));
-      return null;
-    }
-    const res = await fetch(`${auth.base}/admin/user-roles`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        apikey: auth.anon,
-        Authorization: `Bearer ${auth.token}`,
-      },
-      body: JSON.stringify({ rows }),
-    });
-    const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string; results?: Array<{ userId: string; ok: boolean; error?: string }> };
-    if (!res.ok) {
-      alert(ct(`请求失败：${data?.error || res.statusText}`, `Request failed: ${data?.error || res.statusText}`));
-      return null;
-    }
-    return data.results || [];
-  };
-
-  const applyUserRoleBatches = async (parsedRows: Array<Record<string, string>>) => {
-    if (parsedRows.length === 0) {
-      setRoleBulkResult(ct("messages.no_valid_rows_to_submit", "没有可提交的有效行", "No valid rows to submit"));
-      return;
-    }
-    setRoleApplyBusy(true);
-    setRoleBulkResult(null);
-    try {
-      let ok = 0;
-      let fail = 0;
-      const errLines: string[] = [];
-      for (let i = 0; i < parsedRows.length; i += 200) {
-        const chunk = parsedRows.slice(i, i + 200);
-        const results = await postUserRoleRows(chunk);
-        if (!results) {
-          setRoleBulkResult(ct("messages.batch_apply_aborted", "批量应用已中断", "Batch apply aborted"));
-          return;
-        }
-        for (const r of results) {
-          if (r.ok) ok++;
-          else {
-            fail++;
-            if (errLines.length < 40) errLines.push(`${r.userId}: ${r.error || "?"}`);
-          }
-        }
-      }
-      setRoleBulkResult(
-        ct(`完成：成功 ${ok}，失败 ${fail}`, `Done: ${ok} ok, ${fail} failed`) +
-          (errLines.length ? `\n${errLines.join("\n")}` : ""),
-      );
-    } finally {
-      setRoleApplyBusy(false);
-    }
-  };
-
-  const downloadDistributorsCsv = async () => {
-    const auth = await getEdgeFnAuth();
-    if (!auth) {
-      alert(ct("messages.configure_server_connection_first", "请先配置服务器连接", "Configure server connection first"));
-      return;
-    }
-    if (!auth.token) {
-      alert(ct("messages.sign_in_with_supabase_first", "请先登录 Supabase 会话", "Sign in with Supabase first"));
-      return;
-    }
-    setRoleApplyBusy(true);
-    try {
-      const res = await fetch(`${auth.base}/admin/distributors`, {
-        headers: { apikey: auth.anon, Authorization: `Bearer ${auth.token}` },
-      });
-      const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string; rows?: Array<Record<string, unknown>> };
-      if (!res.ok || !data?.ok) {
-        alert(ct(`请求失败：${data?.error || res.statusText}`, `Request failed: ${data?.error || res.statusText}`));
-        return;
-      }
-      const rows = data.rows || [];
-      const header = [
-        ct("messages.user_id_required_supabase_auth_uuid", "user_id（必填·勿改·Supabase Auth UUID）", "user_id (required · Supabase Auth UUID)"),
-        ct("messages.display_name_read_only", "display_name（只读）", "display_name (read-only)"),
-        ct("messages.phone_read_only", "phone（只读）", "phone (read-only)"),
-        ct("messages.content_role_optional_lowercase_none_or_editor_no", "content_role（选填·英文 none 或 editor·勿用对勾）", "content_role (optional · lowercase none or editor · no checkmarks)"),
-        ct("messages.app_role_optional_lowercase_farmer_or_distributor_no", "app_role（选填·英文 farmer 或 distributor·勿用对勾）", "app_role (optional · lowercase farmer or distributor · no checkmarks)"),
-        ct("messages.updated_at_read_only", "updated_at（只读）", "updated_at (read-only)"),
-      ];
-      const legend = ct("messages.how_to_edit_change_only_content_role_and", "填写说明：若只改角色，请编辑「content_role」「app_role」两列；必须填英文小写单词 none / editor / farmer / distributor，不要用 √、不要写「是」或中文角色名。user_id 列请勿手改。", "How to edit: change only content_role and app_role using lowercase English (none, editor, farmer, distributor). No checkmarks. Do not edit user_id.");
-      const lines = [
-        header.map(escapeCsvCell).join(","),
-        [escapeCsvCell(legend), "", "", "", "", ""].join(","),
-        ...rows.map((r) => header.map((_, hi) => {
-          const keys = ["user_id", "display_name", "phone", "content_role", "app_role", "updated_at"];
-          return escapeCsvCell(r[keys[hi]]);
-        }).join(",")),
-      ];
-      const blob = new Blob(["\uFEFF" + lines.join("\n")], { type: "text/csv;charset=utf-8" });
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = `distributors-${new Date().toISOString().slice(0, 10)}.csv`;
-      a.click();
-      URL.revokeObjectURL(a.href);
-    } finally {
-      setRoleApplyBusy(false);
-    }
-  };
-
-  const downloadRoleImportTemplate = () => {
-    const h0 = ct("messages.user_id_required_uuid_from_supabase_auth", "user_id（必填·Supabase Auth 里用户的 UUID）", "user_id (required · UUID from Supabase Auth)");
-    const h1 = ct("messages.content_role_optional_lowercase_none_or_editor_no", "content_role（选填·英文 none 或 editor·勿用对勾）", "content_role (optional · lowercase none or editor · no checkmarks)");
-    const h2 = ct("messages.app_role_optional_lowercase_farmer_or_distributor_no", "app_role（选填·英文 farmer 或 distributor·勿用对勾）", "app_role (optional · lowercase farmer or distributor · no checkmarks)");
-    const lines = [
-      [escapeCsvCell(h0), escapeCsvCell(h1), escapeCsvCell(h2)].join(","),
-      [
-        escapeCsvCell(
-          ct("messages.note_column_a_must_be_a_uuid_not", "（说明·勿在 A 列填中文当 UUID）三列均填英文小写：none / editor / farmer / distributor；不要用 √、不要用中文代替。none=撤内容权限；editor=内容编辑；farmer=农户壳；distributor=门店壳。某一格留空=上传时不改该项。", "(Note) Column A must be a UUID, not Chinese text. Use lowercase English: none / editor / farmer / distributor — no checkmarks. Blank cell = leave that field unchanged on upload."),
-        ),
-        "",
-        "",
-      ].join(","),
-      [
-        escapeCsvCell(
-          ct("messages.next_row_is_an_example_delete_it_or", "下一行为示例：请删除该行或把 UUID 换成真实用户。若仍保留示例 UUID，上传时系统会自动忽略该行。", "Next row is an example — delete it or replace the UUID. The sample UUID is ignored on upload if left unchanged."),
-        ),
-        "",
-        "",
-      ].join(","),
-      [ROLE_IMPORT_EXAMPLE_UUID, "editor", "distributor"].map(escapeCsvCell).join(","),
-    ];
-    const blob = new Blob(["\uFEFF" + lines.join("\n")], { type: "text/csv;charset=utf-8" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "role-import-template.csv";
-    a.click();
-    URL.revokeObjectURL(a.href);
-  };
-
-  const handleRoleExcelFile = async (file: File | undefined) => {
-    if (!file) return;
-    setRoleBulkResult(null);
-    try {
-      const matrix = await readXlsxFile(file);
-      if (!matrix || matrix.length < 2) {
-        alert(ct("messages.spreadsheet_is_empty_or_has_no_data_rows", "表格为空或没有数据行", "Spreadsheet is empty or has no data rows"));
-        return;
-      }
-      const header = matrix[0] as unknown[];
-      const idx = detectRoleImportColumns(header);
-      if (!idx) {
-        alert(
-          ct("messages.first_row_must_include_a_user_id_column", "首行需包含 user_id 列（表头可带中文说明，系统取「（」或「(」前的英文列名识别）。", "First row must include a user_id column (Chinese hints in headers are OK; we use the English part before '(')."),
-        );
-        return;
-      }
-      const out: Array<Record<string, string>> = [];
-      for (let r = 1; r < matrix.length; r++) {
-        const row = matrix[r] as unknown[];
-        const uid = String(row[idx.userIdx] ?? "").trim();
-        if (!UUID_RE_CLIENT.test(uid)) continue;
-        if (uid === ROLE_IMPORT_EXAMPLE_UUID) continue;
-        const contentRole = idx.contentIdx >= 0 ? parseExcelContentRoleCell(row[idx.contentIdx]) : null;
-        const appRole = idx.appIdx >= 0 ? parseExcelAppRoleCell(row[idx.appIdx]) : null;
-        const rec: Record<string, string> = { userId: uid };
-        if (contentRole !== null) rec.contentRole = contentRole;
-        if (appRole !== null) rec.appRole = appRole;
-        if (!rec.contentRole && !rec.appRole) continue;
-        out.push(rec);
-      }
-      if (out.length === 0) {
-        alert(
-          ct("messages.no_valid_rows_need_a_valid_uuid_and", "未解析到有效行（需合法 UUID，且至少填写 content_role 或 app_role 之一）", "No valid rows (need a valid UUID and at least content_role or app_role)"),
-        );
-        return;
-      }
-      await applyUserRoleBatches(out);
-    } catch (e: any) {
-      alert(ct(`读取表格失败：${e?.message || e}`, `Failed to read spreadsheet: ${e?.message || e}`));
-    }
-  };
-
-  const applySingleUserRole = async () => {
-    const uid = roleSingleUserId.trim();
-    if (!UUID_RE_CLIENT.test(uid)) {
-      alert(ct("messages.user_id_must_be_a_valid_uuid", "用户 ID 须为合法 UUID", "User ID must be a valid UUID"));
-      return;
-    }
-    const rec: Record<string, string> = { userId: uid };
-    if (roleSingleContent) rec.contentRole = roleSingleContent;
-    if (roleSingleApp) rec.appRole = roleSingleApp;
-    if (!rec.contentRole && !rec.appRole) {
-      alert(ct("messages.select_at_least_one_role_field_to_write", "请至少选择一项要写入的角色", "Select at least one role field to write"));
-      return;
-    }
-    await applyUserRoleBatches([rec]);
-  };
 
   const runPwaCombinedIconUpload = async (file: File, target: "main" | "drawer") => {
     setPwaIconErr(null);
@@ -609,14 +299,12 @@ export default function ConfigManagerPage() {
         return;
       }
       if (target === "main") {
-        setWorkingConfig((prev) => {
-          const newConfig = JSON.parse(JSON.stringify(prev)) as unknown as HomePageConfig;
-          if (!newConfig.desktopIcon || typeof newConfig.desktopIcon !== "object") {
-            newConfig.desktopIcon = { appName: "", icon192Url: "", icon512Url: "" };
-          }
-          newConfig.desktopIcon.icon192Url = r1.storagePath;
-          newConfig.desktopIcon.icon512Url = r2.storagePath;
-          return newConfig;
+        setWorkingConfig((prev: HomePageConfig) => {
+          const base =
+            prev.desktopIcon && typeof prev.desktopIcon === "object"
+              ? prev.desktopIcon
+              : { appName: "", icon192Url: "", icon512Url: "" };
+          return { ...prev, desktopIcon: { ...base, icon192Url: r1.storagePath, icon512Url: r2.storagePath } };
         });
         setHasChanges(true);
       } else {
@@ -635,12 +323,6 @@ export default function ConfigManagerPage() {
       setPwaIconBusy(false);
     }
   };
-
-  useEffect(() => {
-    if ((supabaseTestMessage || supabaseTestLoading) && supabaseTestMessageRef.current) {
-      supabaseTestMessageRef.current.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    }
-  }, [supabaseTestMessage, supabaseTestLoading]);
 
   // 处理返回：侧边栏打开时先关闭侧边栏，而不是离开页面
   const handleGoBack = () => {
@@ -729,12 +411,6 @@ export default function ConfigManagerPage() {
         return { id: maxId + 1, title: "", viewers: "0", thumbnail: "", videoUrl: "" };
       case "articles":
         return { id: maxId + 1, title: "", content: "", thumbnail: "", videoUrl: "" };
-      case "marketCategories":
-        return { id: (maxId + 1).toString(), name: "", subCategories: [] };
-      case "marketProducts":
-        return { id: maxId + 1, name: "", image: "", price: "", category: "", subCategory: "", description: "", stock: 0, videoUrl: "" };
-      case "marketAd":
-        return { id: maxId + 1, image: "", title: "", content: "" };
       case "market":
         // Dock 布局：根据当前子标签创建对应类型的项
         if (marketSubTab === "ads") {
@@ -759,8 +435,6 @@ export default function ConfigManagerPage() {
         return { merchantUserId: "", channelId: "", name: "", avatar: "", subtitle: "", verifiedDomains: [] };
       case "desktopIcon":
         return { appName: "", icon192Url: "", icon512Url: "" };
-      case "aiModel":
-        return { id: maxId + 1, name: "", description: "", parameters: "" };
       default:
         return {};
     }
@@ -775,10 +449,6 @@ export default function ConfigManagerPage() {
       case "banners": return wc.banners || [];
       case "live": return wc.liveStreams || [];
       case "articles": return wc.articles || [];
-      case "marketCategories": return wc.marketPage?.categories || [];
-      case "marketProducts": return wc.marketPage?.products || [];
-      case "marketAd":
-        return wc.marketPage?.advertisements || [];
       case "market": return []; // Dock 布局自行渲染，不用卡片网格
       case "filing": return wc.filing ? [wc.filing] : [];
       case "aboutUs": return wc.aboutUs ? [wc.aboutUs] : [];
@@ -790,7 +460,6 @@ export default function ConfigManagerPage() {
       case "chatContact": return wc.chatContact ? [wc.chatContact] : [];
       case "desktopIcon": return wc.desktopIcon ? [wc.desktopIcon] : [];
       // aiModel tab 使用直接表单渲染（aiModelConfig + cloudAIConfig），不走卡片网格
-      case "aiModel": return [];
       case "pushNotification": return [];
       case "userRoles": return [];
       default: return [];
@@ -798,202 +467,96 @@ export default function ConfigManagerPage() {
   };
 
   // 保存编辑
+  const upsertById = (list: any[], item: any) => {
+    const items = Array.isArray(list) ? list.slice() : [];
+    const existingIndex = items.findIndex((row: any) => entityIdsMatch(row.id, item.id));
+    if (existingIndex >= 0) items[existingIndex] = item;
+    else items.push(item);
+    return items;
+  };
+
   const handleSaveEdit = () => {
     if (!editingItem) return;
 
-    // 深拷贝配置，避免直接修改原数组引用导致 React 检测不到变化
-    const newConfig = JSON.parse(JSON.stringify(workingConfig)) as typeof config;
-
-    // 对于 market Dock 布局，根据 editingItem._type 查找正确的数组
-    const items =
-      activeTab === "market"
-        ? editingItem._type === "category"
-          ? (newConfig.marketPage?.categories || [])
-          : editingItem._type === "ad"
-            ? (newConfig.marketPage?.advertisements || [])
-            : (newConfig.marketPage?.products || [])
-        : getItemsByType(activeTab);
-
-    const existingIndex = items.findIndex((item: any) =>
-      entityIdsMatch(item.id, editingItem.id),
-    );
-
-    if (existingIndex >= 0) {
-      // 更新现有项
-      switch (activeTab) {
-        case "banners":
-          newConfig.banners[existingIndex] = editingItem;
-          break;
-        case "live":
-          newConfig.liveStreams[existingIndex] = editingItem;
-          break;
-        case "articles":
-          newConfig.articles[existingIndex] = editingItem;
-          break;
-        case "marketCategories": {
-          const oldCat = workingConfig.marketPage?.categories?.[existingIndex] as MarketCategoryLike | undefined;
+    switch (activeTab) {
+      case "banners":
+        replaceSection("banners", upsertById(workingConfig.banners, editingItem));
+        break;
+      case "live":
+        replaceSection("liveStreams", upsertById(workingConfig.liveStreams, editingItem));
+        break;
+      case "articles":
+        replaceSection("articles", upsertById(workingConfig.articles, editingItem));
+        break;
+      case "market": {
+        const kind = editingItem._type === "category" ? "categories" : editingItem._type === "ad" ? "advertisements" : "products";
+        const current = (workingConfig.marketPage && workingConfig.marketPage[kind]) || [];
+        if (kind === "categories") {
+          const existingIndex = current.findIndex((row: any) => entityIdsMatch(row.id, editingItem.id));
+          const oldCat = existingIndex >= 0 ? (current[existingIndex] as MarketCategoryLike) : undefined;
           const savedCat = stripMarketDockMeta(editingItem) as MarketCategoryLike;
-          newConfig.marketPage.categories[existingIndex] = savedCat;
-          const newCatId = applyMarketCategoryCascade(newConfig, oldCat, savedCat);
-          if (selectedMarketCategory === oldCat?.id) {
+          const nextCats = upsertById(current, savedCat);
+          const nextCfg = {
+            ...workingConfig,
+            marketPage: {
+              categories: nextCats,
+              products: workingConfig.marketPage?.products || [],
+              advertisements: workingConfig.marketPage?.advertisements || [],
+            },
+          };
+          const newCatId = applyMarketCategoryCascade(nextCfg, oldCat, savedCat);
+          patchMarketPage({
+            categories: nextCfg.marketPage.categories,
+            products: nextCfg.marketPage.products,
+            advertisements: nextCfg.marketPage.advertisements,
+          });
+          if (selectedMarketCategory === oldCat?.id || selectedMarketCategory === null) {
             setSelectedMarketCategory(newCatId);
           }
-          break;
+        } else {
+          patchMarketPage({ [kind]: upsertById(current, stripMarketDockMeta(editingItem)) });
         }
-        case "marketProducts":
-          newConfig.marketPage.products[existingIndex] = editingItem;
-          break;
-        case "marketAd":
-          newConfig.marketPage.advertisements[existingIndex] = editingItem;
-          break;
-        case "market":
-          // Dock 布局：根据 _type 更新对应数组
-          ensureMarketPageOnConfig(newConfig as unknown as Record<string, unknown>);
-          if (editingItem._type === "category") {
-            const oldCat = workingConfig.marketPage?.categories?.[existingIndex] as MarketCategoryLike | undefined;
-            const savedCat = stripMarketDockMeta(editingItem) as MarketCategoryLike;
-            newConfig.marketPage!.categories[existingIndex] = savedCat;
-            const newCatId = applyMarketCategoryCascade(newConfig, oldCat, savedCat);
-            if (selectedMarketCategory === oldCat?.id || selectedMarketCategory === null) {
-              setSelectedMarketCategory(newCatId);
-            }
-          } else if (editingItem._type === "ad") {
-            newConfig.marketPage!.advertisements[existingIndex] = stripMarketDockMeta(editingItem);
-          } else {
-            newConfig.marketPage!.products[existingIndex] = stripMarketDockMeta(editingItem);
-          }
-          break;
-        case "filing":
-          newConfig.filing = editingItem;
-          break;
-        case "aboutUs":
-          newConfig.aboutUs = editingItem;
-          break;
-        case "privacy":
-          newConfig.privacyPolicy = editingItem;
-          break;
-        case "terms":
-          newConfig.termsOfService = editingItem;
-          break;
-        case "technicalSupport":
-          newConfig.technicalSupport = editingItem;
-          break;
-        case "appBranding":
-          newConfig.appBranding = editingItem;
-          break;
-        case "splashScreen":
-          newConfig.splashScreen = {
-            imageUrl: String(editingItem.imageUrl ?? ''),
-            minDisplayMs: Math.max(0, Number(editingItem.minDisplayMs) || 2000),
-            maxResourceWaitMs: Math.max(300, Number(editingItem.maxResourceWaitMs) || 4000),
-            showSkipButton: editingItem.showSkipButton !== false,
-          };
-          break;
-        case "chatContact":
-          newConfig.chatContact = editingItem;
-          break;
-        case "desktopIcon":
-          newConfig.desktopIcon = editingItem;
-          break;
-        // aiModel: 直接表单编辑，不走此路径
+        break;
       }
-    } else {
-      // 添加新项
-      switch (activeTab) {
-        case "banners":
-          if (!newConfig.banners) newConfig.banners = [];
-          newConfig.banners.push(editingItem);
-          break;
-        case "live":
-          if (!newConfig.liveStreams) newConfig.liveStreams = [];
-          newConfig.liveStreams.push(editingItem);
-          break;
-        case "articles":
-          if (!newConfig.articles) newConfig.articles = [];
-          newConfig.articles.push(editingItem);
-          break;
-        case "marketCategories":
-          if (!newConfig.marketPage) {
-            newConfig.marketPage = { categories: [], products: [], advertisements: [] } as typeof newConfig.marketPage;
-          }
-          if (!newConfig.marketPage.categories) newConfig.marketPage.categories = [];
-          newConfig.marketPage.categories.push(stripMarketDockMeta(editingItem));
-          break;
-        case "marketProducts":
-          if (!newConfig.marketPage) {
-            newConfig.marketPage = { categories: [], products: [], advertisements: [] } as typeof newConfig.marketPage;
-          }
-          if (!newConfig.marketPage.products) newConfig.marketPage.products = [];
-          newConfig.marketPage.products.push(editingItem);
-          break;
-        case "marketAd":
-          if (!newConfig.marketPage) {
-            newConfig.marketPage = { categories: [], products: [], advertisements: [] } as typeof newConfig.marketPage;
-          }
-          if (!newConfig.marketPage.advertisements) newConfig.marketPage.advertisements = [];
-          newConfig.marketPage.advertisements.push(editingItem);
-          break;
-        case "market":
-          // Dock 布局：根据 _type 添加到对应数组
-          ensureMarketPageOnConfig(newConfig as unknown as Record<string, unknown>);
-          if (editingItem._type === "category") {
-            if (!newConfig.marketPage!.categories) newConfig.marketPage!.categories = [];
-            const savedCat = stripMarketDockMeta(editingItem) as MarketCategoryLike;
-            newConfig.marketPage!.categories.push(savedCat);
-            setSelectedMarketCategory(String(savedCat.id));
-          } else if (editingItem._type === "ad") {
-            if (!newConfig.marketPage!.advertisements) newConfig.marketPage!.advertisements = [];
-            newConfig.marketPage!.advertisements.push(stripMarketDockMeta(editingItem));
-          } else {
-            if (!newConfig.marketPage!.products) newConfig.marketPage!.products = [];
-            newConfig.marketPage!.products.push(stripMarketDockMeta(editingItem));
-          }
-          break;
-        case "filing":
-          newConfig.filing = editingItem;
-          break;
-        case "aboutUs":
-          newConfig.aboutUs = editingItem;
-          break;
-        case "privacy":
-          newConfig.privacyPolicy = editingItem;
-          break;
-        case "terms":
-          newConfig.termsOfService = editingItem;
-          break;
-        case "technicalSupport":
-          newConfig.technicalSupport = editingItem;
-          break;
-        case "appBranding":
-          newConfig.appBranding = editingItem;
-          break;
-        case "splashScreen":
-          newConfig.splashScreen = {
-            imageUrl: String(editingItem.imageUrl ?? ''),
-            minDisplayMs: Math.max(0, Number(editingItem.minDisplayMs) || 2000),
-            maxResourceWaitMs: Math.max(300, Number(editingItem.maxResourceWaitMs) || 4000),
-            showSkipButton: editingItem.showSkipButton !== false,
-          };
-          break;
-        case "chatContact":
-          newConfig.chatContact = editingItem;
-          break;
-        case "desktopIcon":
-          newConfig.desktopIcon = editingItem;
-          break;
-        // aiModel: 直接表单编辑，不走此路径
-      }
+      case "filing":
+        replaceSection("filing", editingItem);
+        break;
+      case "aboutUs":
+        replaceSection("aboutUs", editingItem);
+        break;
+      case "privacy":
+        replaceSection("privacyPolicy", editingItem);
+        break;
+      case "terms":
+        replaceSection("termsOfService", editingItem);
+        break;
+      case "technicalSupport":
+        replaceSection("technicalSupport", editingItem);
+        break;
+      case "appBranding":
+        replaceSection("appBranding", editingItem);
+        break;
+      case "splashScreen":
+        replaceSection("splashScreen", {
+          imageUrl: String(editingItem.imageUrl ?? ''),
+          minDisplayMs: Math.max(0, Number(editingItem.minDisplayMs) || 2000),
+          maxResourceWaitMs: Math.max(300, Number(editingItem.maxResourceWaitMs) || 4000),
+          showSkipButton: editingItem.showSkipButton !== false,
+        });
+        break;
+      case "chatContact":
+        replaceSection("chatContact", editingItem);
+        break;
+      case "desktopIcon":
+        replaceSection("desktopIcon", editingItem);
+        break;
     }
 
-    setWorkingConfig(newConfig);
     setEditingItem(null);
-    setHasChanges(true);
   };
 
-  // 删除项
   const handleDeleteItem = (id: number | string, itemType?: string) => {
-    const isMarketCategoryDelete =
-      itemType === "category" && (activeTab === "market" || activeTab === "marketCategories");
+    const isMarketCategoryDelete = itemType === "category" && activeTab === "market";
     if (isMarketCategoryDelete) {
       const n = countProductsInCategory(workingConfig, id);
       const msg =
@@ -1008,130 +571,79 @@ export default function ConfigManagerPage() {
       return;
     }
 
-    const newConfig = JSON.parse(JSON.stringify(workingConfig)) as typeof config;
     switch (activeTab) {
       case "banners":
-        newConfig.banners = workingConfig.banners.filter(
-          (item: any) => !entityIdsMatch(item.id, id),
-        );
+        replaceSection("banners", (workingConfig.banners || []).filter((item: any) => !entityIdsMatch(item.id, id)));
         break;
       case "live":
-        newConfig.liveStreams = workingConfig.liveStreams.filter(
-          (item: any) => !entityIdsMatch(item.id, id),
-        );
+        replaceSection("liveStreams", (workingConfig.liveStreams || []).filter((item: any) => !entityIdsMatch(item.id, id)));
         break;
       case "articles":
-        newConfig.articles = workingConfig.articles.filter(
-          (item: any) => !entityIdsMatch(item.id, id),
-        );
-        break;
-      case "marketCategories": {
-        ensureMarketPageOnConfig(newConfig as unknown as Record<string, unknown>);
-        const catId = String(id);
-        newConfig.marketPage!.categories = (workingConfig.marketPage?.categories || []).filter(
-          (item: any) => !entityIdsMatch(item.id, id),
-        );
-        newConfig.marketPage!.products = (workingConfig.marketPage?.products || []).filter(
-          (item: any) => String(item.category) !== catId,
-        );
-        if (selectedMarketCategory === catId) {
-          const next = newConfig.marketPage!.categories[0]?.id;
-          setSelectedMarketCategory(next != null ? String(next) : null);
-        }
-        break;
-      }
-      case "marketProducts":
-        ensureMarketPageOnConfig(newConfig as unknown as Record<string, unknown>);
-        newConfig.marketPage!.products = (workingConfig.marketPage?.products || []).filter(
-          (item: any) => !entityIdsMatch(item.id, id),
-        );
-        break;
-      case "marketAd":
-        ensureMarketPageOnConfig(newConfig as unknown as Record<string, unknown>);
-        newConfig.marketPage!.advertisements = (workingConfig.marketPage?.advertisements || []).filter(
-          (item: any) => !entityIdsMatch(item.id, id),
-        );
+        replaceSection("articles", (workingConfig.articles || []).filter((item: any) => !entityIdsMatch(item.id, id)));
         break;
       case "market": {
-        // Dock 布局：根据 itemType 只删除对应数组中的项，避免 ID 冲突导致误删
-        ensureMarketPageOnConfig(newConfig as unknown as Record<string, unknown>);
-
         if (itemType === "category") {
           const catId = String(id);
-          newConfig.marketPage!.categories = (workingConfig.marketPage?.categories || []).filter(
-            (item: any) => !entityIdsMatch(item.id, id),
-          );
-          newConfig.marketPage!.products = (workingConfig.marketPage?.products || []).filter(
-            (item: any) => String(item.category) !== catId,
-          );
+          const categories = (workingConfig.marketPage?.categories || []).filter((item: any) => !entityIdsMatch(item.id, id));
+          const products = (workingConfig.marketPage?.products || []).filter((item: any) => String(item.category) !== catId);
+          patchMarketPage({ categories, products });
           if (selectedMarketCategory === catId) {
-            const next = newConfig.marketPage!.categories[0]?.id;
+            const next = categories[0]?.id;
             setSelectedMarketCategory(next != null ? String(next) : null);
           }
         } else if (itemType === "ad") {
-          newConfig.marketPage!.advertisements = (workingConfig.marketPage?.advertisements || []).filter(
-            (item: any) => !entityIdsMatch(item.id, id),
-          );
+          patchMarketPage({
+            advertisements: (workingConfig.marketPage?.advertisements || []).filter((item: any) => !entityIdsMatch(item.id, id)),
+          });
         } else {
-          // 默认：产品（向后兼容无 itemType 的旧调用）
-          newConfig.marketPage!.products = (workingConfig.marketPage?.products || []).filter(
-            (item: any) => !entityIdsMatch(item.id, id),
-          );
+          patchMarketPage({
+            products: (workingConfig.marketPage?.products || []).filter((item: any) => !entityIdsMatch(item.id, id)),
+          });
         }
         break;
       }
-      // 单体配置类型：重置为默认值而非null，防止崩溃
       case "filing":
-        newConfig.filing = { icpNumber: "", icpUrl: "", policeNumber: "", policeUrl: "" };
+        replaceSection("filing", { icpNumber: "", icpUrl: "", policeNumber: "", policeUrl: "" });
         break;
       case "aboutUs":
-        newConfig.aboutUs = { title: "", content: "" };
+        replaceSection("aboutUs", { title: "", content: "" });
         break;
       case "privacy":
-        newConfig.privacyPolicy = { title: "", content: "" };
+        replaceSection("privacyPolicy", { title: "", content: "" });
         break;
       case "terms":
-        newConfig.termsOfService = { title: "", content: "" };
+        replaceSection("termsOfService", { title: "", content: "" });
         break;
       case "technicalSupport":
-        newConfig.technicalSupport = { title: "", content: "" };
+        replaceSection("technicalSupport", { title: "", content: "" });
         break;
       case "appBranding":
-        newConfig.appBranding = { logoUrl: "", appName: "", slogan: "" };
+        replaceSection("appBranding", { logoUrl: "", appName: "", slogan: "" });
         break;
       case "splashScreen":
-        newConfig.splashScreen = { imageUrl: "", minDisplayMs: 2000, maxResourceWaitMs: 4000, showSkipButton: true };
+        replaceSection("splashScreen", { imageUrl: "", minDisplayMs: 2000, maxResourceWaitMs: 4000, showSkipButton: true });
         break;
       case "chatContact":
-        newConfig.chatContact = { merchantUserId: "", channelId: "", name: "", avatar: "", subtitle: "", verifiedDomains: [] };
+        replaceSection("chatContact", { merchantUserId: "", channelId: "", name: "", avatar: "", subtitle: "", verifiedDomains: [] });
         break;
       case "desktopIcon":
-        newConfig.desktopIcon = { appName: "", icon192Url: "", icon512Url: "" };
+        replaceSection("desktopIcon", { appName: "", icon192Url: "", icon512Url: "" });
         break;
-      // aiModel: 直接表单编辑，不走删除路径
     }
 
-    setWorkingConfig(newConfig);
-    setHasChanges(true);
     setEditingItem((prev: any) =>
       prev != null && entityIdsMatch(prev.id, id) ? null : prev,
     );
   };
 
-  /** 置顶白名单与弹窗内 chatContact 编辑共用，保持 workingConfig 与已打开的编辑项一致 */
+    /** 置顶白名单与弹窗内 chatContact 编辑共用，保持 workingConfig 与已打开的编辑项一致 */
   const patchChatContactDomains = (nextDomains: string[]) => {
-    const newConfig = JSON.parse(JSON.stringify(workingConfig)) as typeof config;
-    const base = newConfig.chatContact || {
-      merchantUserId: "",
-      channelId: "",
-      name: "",
-      avatar: "",
-      subtitle: "",
-      verifiedDomains: [] as string[],
-    };
-    newConfig.chatContact = { ...base, verifiedDomains: nextDomains };
-    setWorkingConfig(newConfig);
-    setHasChanges(true);
+    patchSection(
+      "chatContact",
+      workingConfig.chatContact
+        ? { verifiedDomains: nextDomains }
+        : { merchantUserId: "", channelId: "", name: "", avatar: "", subtitle: "", verifiedDomains: nextDomains },
+    );
     setEditingItem((prev: any) =>
       activeTab === "chatContact" && prev ? { ...prev, verifiedDomains: nextDomains } : prev,
     );
@@ -1166,32 +678,20 @@ export default function ConfigManagerPage() {
 
     // ---- 类别操作 ----
     const handleCategoryReorder = (newCats: typeof categories) => {
-      const nc = JSON.parse(JSON.stringify(workingConfig)) as typeof config;
-      ensureMarketPageOnConfig(nc as unknown as Record<string, unknown>);
-      nc.marketPage!.categories = newCats;
-      setWorkingConfig(nc);
-      setHasChanges(true);
+      patchMarketPage({ categories: newCats });
     };
 
     const handleSaveProductReorder = (items: any[]) => {
-      const nc = JSON.parse(JSON.stringify(workingConfig)) as typeof config;
-      ensureMarketPageOnConfig(nc as unknown as Record<string, unknown>);
       if (selectedCat) {
         const other = allProducts.filter((p) => p.category !== selectedCat);
-        nc.marketPage!.products = [...other, ...items];
+        patchMarketPage({ products: [...other, ...items] });
       } else {
-        nc.marketPage!.products = items;
+        patchMarketPage({ products: items });
       }
-      setWorkingConfig(nc);
-      setHasChanges(true);
     };
 
     const handleSaveAdReorder = (items: any[]) => {
-      const nc = JSON.parse(JSON.stringify(workingConfig)) as typeof config;
-      ensureMarketPageOnConfig(nc as unknown as Record<string, unknown>);
-      nc.marketPage!.advertisements = items;
-      setWorkingConfig(nc);
-      setHasChanges(true);
+      patchMarketPage({ advertisements: items });
     };
 
     const openEdit = (item: any, type: string) => {
@@ -1570,12 +1070,6 @@ export default function ConfigManagerPage() {
           return (<><Thumb src={item.thumbnail} alt={item.title} /><div className="p-3 space-y-2 flex-1"><p className="text-sm text-gray-800">{item.title || '-'}</p><div className="flex items-center gap-2"><span className="inline-flex items-center gap-1 text-[11px] bg-red-50 text-red-600 px-2 py-0.5 rounded-full">● LIVE</span><span className="text-xs text-gray-500">{item.viewers || 0} {ct("commonLabels.viewers", "观看", "viewers")}</span></div><Field label="URL" value={item.videoUrl} mono /></div></>);
         case 'articles':
           return (<><Thumb src={item.thumbnail} alt={item.title} /><div className="p-3 space-y-2 flex-1"><p className="text-sm text-gray-800">{item.title || '-'}</p><Field label={ct("headers.content", "内容", "Content")} value={item.content} /><Field label={ct("headers.videoUrl", "视频URL", "Video URL")} value={item.videoUrl} mono /></div></>);
-        case 'marketCategories':
-          return (<div className="p-3 space-y-2 flex-1"><p className="text-sm text-gray-800">{item.name || '-'}</p>{item.subCategories?.length > 0 && <div className="flex flex-wrap gap-1">{item.subCategories.map((sub: string, i: number) => <span key={i} className="text-[11px] bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-full">{sub}</span>)}</div>}</div>);
-        case 'marketProducts':
-          return (<><Thumb src={item.image} alt={item.name} /><div className="p-3 space-y-2 flex-1"><div className="flex items-start justify-between gap-2"><p className="text-sm text-gray-800 flex-1">{item.name || '-'}</p>{item.price && <span className="text-sm text-emerald-600 flex-shrink-0">{item.price}</span>}</div>{item.category && <span className="inline-block text-[11px] bg-blue-50 text-blue-600 px-2 py-0.5 rounded-full">{item.category}</span>}<Field label={ct("commonLabels.desc", "描述", "Desc")} value={item.description} /><Field label={ct("headers.videoUrl", "视频URL", "Video URL")} value={item.videoUrl} mono /></div></>);
-        case 'marketAd':
-          return (<><Thumb src={item.image} alt={item.title} /><div className="p-3 space-y-2 flex-1"><p className="text-sm text-gray-800">{item.title || '-'}</p><Field label={ct("headers.content", "内容", "Content")} value={item.content} /></div></>);
         case 'filing':
           return (<div className="p-3 space-y-2 flex-1"><Field label={ct("messages.icp_number", "ICP备案号", "ICP Number")} value={item.icpNumber} mono /><Field label={ct("messages.icp_link", "ICP链接", "ICP Link")} value={item.icpUrl} mono /><Field label={ct("messages.police_filing", "公安备案号", "Police Filing")} value={item.policeNumber} mono /><Field label={ct("messages.police_link", "公安链接", "Police Link")} value={item.policeUrl} mono /></div>);
         case 'aboutUs': case 'privacy': case 'terms': case 'technicalSupport':
@@ -1594,33 +1088,16 @@ export default function ConfigManagerPage() {
     };
 
     return (
-      <SortableList
+      <CmsListEditor
         items={items}
         onReorder={(newItems) => {
-          const newConfig = JSON.parse(JSON.stringify(workingConfig)) as typeof config;
           switch (activeTab) {
-            case "banners": newConfig.banners = newItems; break;
-            case "live": newConfig.liveStreams = newItems; break;
-            case "articles": newConfig.articles = newItems; break;
-            case "marketCategories":
-              ensureMarketPageOnConfig(newConfig as unknown as Record<string, unknown>);
-              newConfig.marketPage!.categories = newItems;
-              break;
-            case "marketProducts":
-              ensureMarketPageOnConfig(newConfig as unknown as Record<string, unknown>);
-              newConfig.marketPage!.products = newItems;
-              break;
-            case "marketAd":
-              ensureMarketPageOnConfig(newConfig as unknown as Record<string, unknown>);
-              newConfig.marketPage!.advertisements = newItems;
-              break;
+            case "banners": replaceSection("banners", newItems); break;
+            case "live": replaceSection("liveStreams", newItems); break;
+            case "articles": replaceSection("articles", newItems); break;
           }
-          setWorkingConfig(newConfig);
-          setHasChanges(true);
         }}
         itemKey={(item, idx) => `${activeTab}-${String(item.id ?? 'noid')}-${idx}`}
-        showHandle={false}
-        className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3"
         renderItem={(item: any) => (
           <div className="bg-white rounded-xl border border-gray-200 overflow-hidden flex flex-col hover:shadow-md hover:border-emerald-200 transition-all group cursor-grab active:cursor-grabbing">
             {renderCardBody(item)}
@@ -1647,12 +1124,6 @@ export default function ConfigManagerPage() {
         return ["ID", ct("headers.liveTitle", "直播标题", "Live Title"), ct("headers.viewers", "观看人数", "Viewers"), ct("headers.videoUrl", "视频URL", "Video URL"), ct("headers.preview", "预览", "Preview")];
       case "articles":
         return ["ID", ct("headers.articleTitle", "文章标题", "Article Title"), ct("headers.content", "内容", "Content"), ct("headers.thumbnailUrl", "缩略图URL", "Thumbnail URL"), ct("headers.videoUrl", "视频URL", "Video URL")];
-      case "marketCategories":
-        return ["ID", ct("headers.categoryName", "类别名称", "Category Name"), ct("headers.subcategories", "子类别", "Subcategories")];
-      case "marketProducts":
-        return ["ID", ct("headers.productName", "产品名称", "Product Name"), ct("headers.description", "描述", "Description"), ct("headers.price", "价格", "Price"), ct("headers.category", "类别", "Category"), ct("headers.thumbnailUrl", "缩略图URL", "Thumbnail URL"), ct("headers.videoUrl", "视频URL", "Video URL")];
-      case "marketAd":
-        return ["ID", ct("headers.adTitle", "广告标题", "Ad Title"), ct("headers.content", "内容", "Content"), ct("headers.thumbnailUrl", "缩略图URL", "Thumbnail URL")];
       case "filing":
         return [ct("messages.icp_number", "ICP备案号", "ICP Number"), ct("messages.icp_link", "ICP链接", "ICP Link"), ct("messages.police_filing_no", "公安备案号", "Police Filing No."), ct("messages.police_link", "公安链接", "Police Link")];
       case "aboutUs":
@@ -1716,35 +1187,6 @@ export default function ConfigManagerPage() {
             <td className="px-3 py-2 text-xs max-w-xs truncate" title={item.content}>{item.content}</td>
             <td className="px-3 py-2 text-xs max-w-xs truncate" title={item.thumbnail}>{item.thumbnail}</td>
             <td className="px-3 py-2 text-xs max-w-xs truncate" title={item.videoUrl}>{item.videoUrl || <span className="text-gray-400">-</span>}</td>
-          </>
-        );
-      case "marketCategories":
-        return (
-          <>
-            <td className="px-3 py-2 text-xs">{item.id}</td>
-            <td className="px-3 py-2 text-xs">{item.name}</td>
-            <td className="px-3 py-2 text-xs">{item.subCategories.join(", ")}</td>
-          </>
-        );
-      case "marketProducts":
-        return (
-          <>
-            <td className="px-3 py-2 text-xs">{item.id}</td>
-            <td className="px-3 py-2 text-xs">{item.name}</td>
-            <td className="px-3 py-2 text-xs">{item.description}</td>
-            <td className="px-3 py-2 text-xs">{item.price}</td>
-            <td className="px-3 py-2 text-xs">{item.category}</td>
-            <td className="px-3 py-2 text-xs max-w-xs truncate" title={item.image}>{item.image}</td>
-            <td className="px-3 py-2 text-xs max-w-xs truncate" title={item.videoUrl}>{item.videoUrl || <span className="text-gray-400">-</span>}</td>
-          </>
-        );
-      case "marketAd":
-        return (
-          <>
-            <td className="px-3 py-2 text-xs">{item.id}</td>
-            <td className="px-3 py-2 text-xs">{item.title}</td>
-            <td className="px-3 py-2 text-xs">{item.content || "-"}</td>
-            <td className="px-3 py-2 text-xs max-w-xs truncate" title={item.image}>{item.image}</td>
           </>
         );
       case "filing":
@@ -2082,147 +1524,6 @@ export default function ConfigManagerPage() {
             <CmsVideoUrlEmbedPreview videoUrl={editingItem.videoUrl} ct={ct} />
           </>
         );
-      case "marketCategories":
-        return (
-          <>
-            <InputField 
-              label={ct("messages.category_id_english_for_system_use", "类别ID（英文，用于系统识别）", "Category ID (English, for system use)")} 
-              value={editingItem.id} 
-              onChange={(v: string) => setEditingItem({ ...editingItem, id: v })} 
-              placeholder={ct("messages.e_g_herbicide_insecticide", "例如：herbicide, insecticide", "e.g. herbicide, insecticide")}
-            />
-            <InputField 
-              label={ct("messages.category_name_displayed_to_user", "类别名称（显示给用户）", "Category Name (displayed to user)")} 
-              value={editingItem.name} 
-              onChange={(v: string) => setEditingItem({ ...editingItem, name: v })} 
-              placeholder={ct("messages.e_g_herbicide_insecticide_1", "例如：除草剂, 杀虫剂", "e.g. Herbicide, Insecticide")}
-            />
-            
-            {/* 子类别编辑 */}
-            <div className="mb-4">
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                {ct("messages.subcategory_list", "子类别列表", "Subcategory List")}
-              </label>
-              <div className="space-y-2">
-                {(editingItem.subCategories || []).map((subCat: string, index: number) => (
-                  <div key={index} className="flex gap-2">
-                    <input
-                      type="text"
-                      value={subCat}
-                      onChange={(e) => {
-                        const newSubCategories = [...(editingItem.subCategories || [])];
-                        newSubCategories[index] = e.target.value;
-                        setEditingItem({ ...editingItem, subCategories: newSubCategories });
-                      }}
-                      className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                      placeholder={ct("messages.subcategory_name", "子类别名称", "Subcategory name")}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const newSubCategories = editingItem.subCategories.filter((_: string, i: number) => i !== index);
-                        setEditingItem({ ...editingItem, subCategories: newSubCategories });
-                      }}
-                      className="px-3 py-2 bg-red-100 text-red-600 rounded-lg hover:bg-red-200 transition-colors"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
-                ))}
-                
-                {/* 添加子类别按钮 */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    const newSubCategories = [...(editingItem.subCategories || []), ""];
-                    setEditingItem({ ...editingItem, subCategories: newSubCategories });
-                  }}
-                  className="w-full px-3 py-2 bg-emerald-50 text-emerald-600 border-2 border-dashed border-emerald-300 rounded-lg hover:bg-emerald-100 transition-colors flex items-center justify-center gap-2"
-                >
-                  <Plus className="w-4 h-4" />
-                  {ct("buttons.addSubcategory", "添加子类别", "Add Subcategory")}
-                </button>
-              </div>
-              <p className="mt-1 text-xs text-gray-500">
-                {ct("messages.examples_pre_emergence_mid_post_pre_post", "💡 子类别示例：苗前、苗中后、苗前苗后", "💡 Examples: Pre-emergence, Mid-post, Pre & Post")}
-              </p>
-            </div>
-          </>
-        );
-      case "marketProducts":
-        return (
-          <>
-            <InputField label="ID" value={editingItem.id} disabled />
-            <InputField label={ct("headers.productName", "产品名称", "Product Name")} value={editingItem.name} onChange={(v: string) => setEditingItem({ ...editingItem, name: v })} />
-            
-            {/* 一级类别选择 */}
-            <div className="mb-4">
-              <label className="block text-sm font-medium text-gray-700 mb-1">{ct("messages.primary_category", "一级类别", "Primary Category")}</label>
-              <select
-                value={editingItem.category || ""}
-                onChange={(e) => setEditingItem({ ...editingItem, category: e.target.value, subCategory: "" })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500"
-              >
-                <option value="">{ct("messages.select_category", "选择类别", "Select category")}</option>
-                {(workingConfig.marketPage?.categories || []).map((cat) => (
-                  <option key={cat.id} value={cat.id}>{cat.name}</option>
-                ))}
-              </select>
-            </div>
-
-            {/* 二级类别选择 */}
-            {editingItem.category && (
-              <div className="mb-4">
-                <label className="block text-sm font-medium text-gray-700 mb-1">{ct("messages.subcategory", "二级类别", "Subcategory")}</label>
-                <select
-                  value={editingItem.subCategory || ""}
-                  onChange={(e) => setEditingItem({ ...editingItem, subCategory: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                >
-                  <option value="">{ct("messages.select_subcategory", "选择子类别", "Select subcategory")}</option>
-                  {(workingConfig.marketPage?.categories || [])
-                    .find((cat) => cat.id === editingItem.category)
-                    ?.subCategories.map((subCat) => (
-                      <option key={subCat} value={subCat}>{subCat}</option>
-                    ))}
-                </select>
-              </div>
-            )}
-            
-            <InputField label={ct("headers.price", "价格", "Price")} value={editingItem.price} onChange={(v: string) => setEditingItem({ ...editingItem, price: v })} placeholder={ct("messages.e_g_68", "例如：¥68", "e.g. 68")} />
-            <InputField label={ct("messages.stock_qty", "库存数量", "Stock Qty")} value={editingItem.stock || ""} onChange={(v: string) => setEditingItem({ ...editingItem, stock: parseInt(v) || 0 })} type="number" />
-            <CmsStorageUploadRow label={ct("messages.product_image_url", "产品图片URL", "Product Image URL")} value={editingItem.image || ""} onChange={(v: string) => setEditingItem({ ...editingItem, image: v })} mode="image" />
-            {editingItem.image && (
-              <div className="mt-2">
-                <p className="text-xs text-gray-500 mb-1">{ct("messages.product_image_preview", "产品图预览", "Product image preview")}</p>
-                <CmsMediaImg src={editingItem.image} alt="" className="w-full max-w-xs aspect-square object-fill bg-gray-100 rounded-lg border border-gray-200" />
-              </div>
-            )}
-            <CmsStorageUploadRow
-              label={ct("messages.detail_video_url_optional", "详情页视频URL（可选）", "Detail video URL (optional)")}
-              value={editingItem.videoUrl || ""}
-              onChange={(v: string) => setEditingItem({ ...editingItem, videoUrl: v })}
-              mode="video"
-            />
-            <p className="text-xs text-gray-500">{ct("messages.live_video_url_supports_embed", "支持直链视频（MP4 等），或 YouTube / Vimeo / B 站 / Facebook 分享链接", "Supports direct video URLs (MP4, etc.) or YouTube / Vimeo / Bilibili / Facebook share links")}</p>
-            <CmsVideoUrlEmbedPreview videoUrl={editingItem.videoUrl} ct={ct} />
-            <TextAreaField label={ct("messages.short_description", "简短描述", "Short Description")} value={editingItem.description || ""} onChange={(v: string) => setEditingItem({ ...editingItem, description: v })} rows={2} placeholder={ct("messages.one_line_product_highlight", "一句话描述产品特点", "One-line product highlight")} />
-            <RichTextEditor label={ct("messages.detailed_description", "详细说明", "Detailed Description")} value={editingItem.details || ""} onChange={(v: string) => setEditingItem({ ...editingItem, details: v })} placeholder={ct("messages.paste_from_word_or_edit_product_details", "从Word粘贴或直接编辑产品详情", "Paste from Word or edit product details")} minHeight="200px" />
-            <RichTextEditor label={ct("messages.specifications", "产品规格", "Specifications")} value={editingItem.specifications || ""} onChange={(v: string) => setEditingItem({ ...editingItem, specifications: v })} placeholder={ct("messages.paste_from_word_or_edit_specifications", "从Word粘贴或直接编辑规格参数", "Paste from Word or edit specifications")} minHeight="150px" />
-          </>
-        );
-      case "marketAd":
-        return (
-          <>
-            <InputField label="ID" value={editingItem.id} disabled />
-            <InputField label={ct("headers.adTitle", "广告标题", "Ad Title")} value={editingItem.title} onChange={(v: string) => setEditingItem({ ...editingItem, title: v })} />
-            <RichTextEditor label={ct("messages.ad_content", "广告内容", "Ad Content")} value={editingItem.content || ""} onChange={(v: string) => setEditingItem({ ...editingItem, content: v })} placeholder={ct("messages.paste_from_word_or_edit_ad_details_directly", "从Word粘贴或直接编辑广告详情", "Paste from Word or edit ad details directly")} />
-            <CmsStorageUploadRow label={ct("messages.ad_image_url", "广告图片URL", "Ad Image URL")} value={editingItem.image || ""} onChange={(v: string) => setEditingItem({ ...editingItem, image: v })} mode="image" />
-            {editingItem.image && (
-              <CmsMediaImg src={editingItem.image} alt={ct("messages.ad_preview", "广告预览", "Ad preview")} className="mt-2 w-full max-w-md h-40 object-fill bg-gray-100 rounded-lg border border-gray-200" />
-            )}
-          </>
-        );
       case "market":
         // Dock 布局：根据 editingItem._type 分发到对应编辑表单
         if (editingItem?._type === "category") {
@@ -2441,9 +1742,6 @@ export default function ConfigManagerPage() {
       case "banners": return ct("messages.safety_guard", "安全守护", "Safety Guard");
       case "live": return ct("messages.live", "直播", "Live");
       case "articles": return ct("messages.articles", "文章", "Articles");
-      case "marketCategories": return ct("messages.market_categories", "市场类别", "Market Categories");
-      case "marketProducts": return ct("messages.market_products", "市场产品", "Market Products");
-      case "marketAd": return ct("messages.market_ads", "市场广告", "Market Ads");
       case "market": return ct("navItems.marketMgmt", "市场管理", "Market");
       case "filing": return ct("navItems.filing", "备案信息", "Filing Info");
       case "aboutUs": return ct("navItems.aboutUs", "关于我们", "About Us");
@@ -2477,17 +1775,6 @@ export default function ConfigManagerPage() {
           const target = pwaIconTargetRef.current;
           pwaIconTargetRef.current = null;
           if (f && target) void runPwaCombinedIconUpload(f, target);
-        }}
-      />
-      <input
-        ref={roleExcelInputRef}
-        type="file"
-        accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
-        className="hidden"
-        onChange={(e) => {
-          const f = e.target.files?.[0];
-          e.target.value = "";
-          if (f) void handleRoleExcelFile(f);
         }}
       />
       {/* 状态栏占位 — standalone 模式下用 safe-area-inset-top 撇开 */}
@@ -2702,329 +1989,9 @@ export default function ConfigManagerPage() {
       ) : (
       <div className="p-4 max-w-7xl mx-auto">
         {activeTab === "supabase" ? (
-          <div className="space-y-4">
-            <div className="rounded-lg border border-amber-200 bg-amber-50/90 px-3 py-2.5 text-[11px] text-amber-950 leading-relaxed">
-              <span className="inline-flex items-start gap-1.5">
-                <Shield className="w-4 h-4 flex-shrink-0 text-amber-700 mt-0.5" aria-hidden />
-                <span>
-                  {ct("messages.security_this_page_is_for_content_super_admins", "安全与权限：本页仅对「内容超级管理员」开放。仓库/出厂 JSON 中不应包含真实项目 URL 与密钥，请在下方填写你方 Supabase Dashboard → Settings → API 中的值。仅重置本机配置（agri_home_config）不会退出登录；若本机已填写 config 写密钥，重置模板时会尽量保留，以免无法继续推送到云端。", "Security: this page is for content super-admins only. Bundled JSON must not contain real project URLs or keys—use your Supabase Dashboard → Settings → API values below. Resetting local app config (agri_home_config) does not sign you out. If a config write secret was set locally, it is kept when applying factory defaults so publishing can continue.")}
-                </span>
-              </span>
-            </div>
-            <div className="bg-white rounded-xl border border-gray-200 p-4 space-y-4">
-              <h3 className="text-base text-gray-800 mb-2">{ct("messages.server_connection_settings", "服务器连接配置", "Server connection settings")}</h3>
-              <p className="text-xs text-gray-500 -mt-2">{ct("messages.configure_your_self_hosted_supabase_project_this_connection", "配置你的自建 Supabase 项目。此连接被 IM通讯、云端AI、推送服务、登录认证等所有后端功能共用。Anon Key 是公开的，可安全放在前端。", "Configure your self-hosted Supabase project. This connection is shared by IM messaging, Cloud AI, push notifications, login auth, and all backend features. Anon Key is public and safe for frontend.")}</p>
-
-              {/* Connection Status */}
-              {(() => {
-                const configured = isSupabaseConfigured(workingConfig.backendProxyConfig?.supabaseUrl, workingConfig.backendProxyConfig?.supabaseAnonKey);
-                return (
-                  <div className={`flex items-center gap-3 p-3 rounded-lg border ${configured ? 'bg-emerald-50 border-emerald-200' : 'bg-gray-50 border-gray-200'}`}>
-                    <div className={`w-3 h-3 rounded-full flex-shrink-0 ${configured ? 'bg-emerald-500' : 'bg-gray-300'}`} />
-                    <span className="text-sm text-gray-700">
-                      {configured
-                        ? ct("messages.configured_ready", "已配置 — 就绪", "Configured — Ready")
-                        : ct("messages.not_configured_fill_in_the_fields_below", "未配置 — 请填写以下信息", "Not configured — fill in the fields below")
-                      }
-                    </span>
-                  </div>
-                );
-              })()}
-
-              {/* Supabase URL */}
-              <div>
-                <label className="block text-sm text-gray-700 mb-1">Supabase URL</label>
-                <input
-                  type="text"
-                  value={workingConfig.backendProxyConfig?.supabaseUrl || ""}
-                  onChange={(e) => {
-                    const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                    if (!newConfig.backendProxyConfig) newConfig.backendProxyConfig = emptyBackendProxyShell();
-                    newConfig.backendProxyConfig.supabaseUrl = e.target.value;
-                    setWorkingConfig(newConfig);
-                    setHasChanges(true);
-                  }}
-                  placeholder="https://your-project-ref.supabase.co"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 font-mono text-xs"
-                />
-                <p className="mt-1 text-[11px] text-gray-400">{ct("messages.supabase_dashboard_settings_api_project_url", "Supabase Dashboard → Settings → API → Project URL", "Supabase Dashboard → Settings → API → Project URL")}</p>
-              </div>
-
-              {/* Supabase Anon Key */}
-              <div>
-                <label className="block text-sm text-gray-700 mb-1">Supabase Anon Key</label>
-                <input
-                  type="text"
-                  value={workingConfig.backendProxyConfig?.supabaseAnonKey || ""}
-                  onChange={(e) => {
-                    const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                    if (!newConfig.backendProxyConfig) newConfig.backendProxyConfig = emptyBackendProxyShell();
-                    newConfig.backendProxyConfig.supabaseAnonKey = e.target.value;
-                    setWorkingConfig(newConfig);
-                    setHasChanges(true);
-                  }}
-                  placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 font-mono text-xs"
-                />
-                <p className="mt-1 text-[11px] text-gray-400">{ct("messages.anon_key_is_public_identifies_project_not_the", "Anon Key 是公开的（标识项目），不等于 Service Role Key。Dashboard → Settings → API → anon public", "Anon Key is public (identifies project), NOT the Service Role Key. Dashboard → Settings → API → anon public")}</p>
-              </div>
-
-              {/* CMS upload storage (banner/article/rich-text; not chat) */}
-              <div>
-                <label className="block text-sm text-gray-700 mb-1">
-                  {ct("messages.cms_media_storage", "CMS 媒体上传存储", "CMS media storage")}
-                </label>
-                <select
-                  value={workingConfig.backendProxyConfig?.cmsStorageProvider ?? "supabase"}
-                  onChange={(e) => {
-                    const v = e.target.value as CmsStorageProvider;
-                    const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                    if (!newConfig.backendProxyConfig) newConfig.backendProxyConfig = emptyBackendProxyShell();
-                    newConfig.backendProxyConfig.cmsStorageProvider = v;
-                    setWorkingConfig(newConfig);
-                    setHasChanges(true);
-                  }}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-sm bg-white"
-                >
-                  <option value="supabase">{ct("messages.supabase_storage", "Supabase Storage", "Supabase Storage")}</option>
-                  <option value="cloudflare_r2">{ct("messages.cloudflare_r2", "Cloudflare R2", "Cloudflare R2")}</option>
-                  <option value="aliyun_oss">{ct("messages.alibaba_cloud_oss", "阿里云 OSS", "Alibaba Cloud OSS")}</option>
-                  <option value="tencent_cos">{ct("messages.tencent_cloud_cos", "腾讯云 COS", "Tencent Cloud COS")}</option>
-                </select>
-                <p className="mt-1 text-[11px] text-gray-400">
-                  {ct("messages.affects_images_videos_uploaded_from_the_content_manager", "仅影响内容管理器内的图片/视频上传（轮播、文章、富文本等）。非 Supabase 时请在 Edge Secrets 配置 CMS_R2_* / CMS_ALIYUN_* / CMS_TENCENT_*，详见项目文档。聊天媒体仍用 Supabase Storage。", "Affects images/videos uploaded from the Content Manager (banners, articles, rich text). For non-Supabase, set Edge Secrets CMS_R2_* / CMS_ALIYUN_* / CMS_TENCENT_* — see project docs. Chat media still uses Supabase Storage.")}
-                </p>
-              </div>
-
-              <div>
-                <label className="block text-sm text-gray-700 mb-1">
-                  {ct("messages.cms_media_cdn_base_url", "CMS 媒体 CDN 地址", "CMS media CDN base URL")}
-                </label>
-                <input
-                  type="url"
-                  value={workingConfig.backendProxyConfig?.mediaCdnBaseUrl || ""}
-                  onChange={(e) => {
-                    const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                    if (!newConfig.backendProxyConfig) newConfig.backendProxyConfig = emptyBackendProxyShell();
-                    newConfig.backendProxyConfig.mediaCdnBaseUrl = e.target.value;
-                    setWorkingConfig(newConfig);
-                    setHasChanges(true);
-                  }}
-                  placeholder="https://cdn.example.com/media"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 font-mono text-xs"
-                />
-                <p className="mt-1 text-[11px] text-gray-400">
-                  {ct(
-                    "messages.cms_media_cdn_base_url_hint",
-                    "留空则相对路径回退 Supabase 公开 URL；填写后展示走 CDN（须先在 Cloudflare 部署 media Worker 并绑定域名，见仓库 cloudflare/README.md）。完整 http(s) 外链不受影响。",
-                    "Leave empty to fall back to Supabase public URLs for relative paths; when set, display uses CDN (deploy the media Worker to your CDN domain first — see cloudflare/README.md). Full http(s) external URLs are unchanged.",
-                  )}
-                </p>
-              </div>
-
-              {/* Connection Test — 按钮右侧即时状态 */}
-              <div className="pt-2">
-                <div className="flex flex-wrap items-start gap-3">
-                  <button
-                    type="button"
-                    disabled={supabaseTestLoading}
-                    onClick={async () => {
-                      const url = workingConfig.backendProxyConfig?.supabaseUrl;
-                      const key = workingConfig.backendProxyConfig?.supabaseAnonKey;
-                      setSupabaseTestMessage(null);
-                      if (!url || !key) {
-                        const msg = ct("messages.please_fill_in_url_and_anon_key_first", "请先填写 URL 和 Anon Key", "Please fill in URL and Anon Key first");
-                        setSupabaseTestMessage({ kind: "err", text: msg });
-                        return;
-                      }
-                      setSupabaseTestLoading(true);
-                      try {
-                        const efn = workingConfig.backendProxyConfig?.edgeFunctionName || "server";
-                        const result = await supabaseTestConnection(url, key, efn);
-                        if (result.ok) {
-                          if (result.tableExists) {
-                            const msg = ct(
-                              `连接成功（${result.latencyMs}ms）。app_config 已就绪（客户端不再用远程 JSON 覆盖本地，内容以发版与本地保存为准）。`,
-                              `Connected (${result.latencyMs}ms). "app_config" exists (client does not overwrite local config from remote; use releases + local saves).`,
-                            );
-                            setSupabaseTestMessage({ kind: "ok", text: msg });
-                          } else {
-                            const msg = ct(
-                              `已连通 Edge（${result.latencyMs}ms），但未找到 app_config。请在 SQL Editor 执行 migrations/001_init.sql。`,
-                              `Edge reachable (${result.latencyMs}ms), but "app_config" missing. Run migrations/001_init.sql in SQL Editor.`,
-                            );
-                            setSupabaseTestMessage({
-                              kind: "warn",
-                              text: result.error ? `${msg}\n${result.error}` : msg,
-                            });
-                          }
-                        } else {
-                          setSupabaseTestMessage({
-                            kind: "err",
-                            text: formatSupabaseTestFailure(result),
-                          });
-                        }
-                      } catch (e) {
-                        console.error("[ConfigManager] testConnection:", e);
-                        setSupabaseTestMessage({
-                          kind: "err",
-                          text: ct("messages.test_failed_open_developer_tools_f12_and_check", "测试过程出错，请打开浏览器开发者工具（F12）查看 Console。", "Test failed. Open Developer Tools (F12) and check the Console."),
-                        });
-                      } finally {
-                        setSupabaseTestLoading(false);
-                      }
-                    }}
-                    className="flex-shrink-0 inline-flex items-center justify-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors text-sm disabled:opacity-60 disabled:pointer-events-none min-h-[40px]"
-                  >
-                    {ct("messages.test_connection", "测试连接", "Test Connection")}
-                  </button>
-
-                  <div
-                    ref={supabaseTestMessageRef}
-                    className="flex-1 min-w-[min(100%,220px)] max-w-xl rounded-lg border border-gray-200 bg-gray-50/90 px-3 py-2 min-h-[40px] flex flex-col justify-center"
-                  >
-                    {supabaseTestLoading ? (
-                      <div className="flex items-center gap-2 text-sm text-blue-700">
-                        <Loader2 className="w-4 h-4 animate-spin flex-shrink-0" aria-hidden />
-                        <span>{ct("messages.checking_edge_and_app_config", "正在检测 Edge 与 app_config…", "Checking Edge and app_config…")}</span>
-                      </div>
-                    ) : supabaseTestMessage ? (
-                      <>
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span
-                            className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ${
-                              supabaseTestMessage.kind === "ok"
-                                ? "bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200"
-                                : supabaseTestMessage.kind === "warn"
-                                  ? "bg-amber-100 text-amber-900 ring-1 ring-amber-200"
-                                  : "bg-red-100 text-red-800 ring-1 ring-red-200"
-                            }`}
-                          >
-                            {supabaseTestMessage.kind === "ok"
-                              ? ct("messages.ok", "连接正常", "OK")
-                              : supabaseTestMessage.kind === "warn"
-                                ? ct("messages.ok_db_setup_needed", "已连通 · 需建表", "OK · DB setup needed")
-                                : ct("messages.failed", "连接失败", "Failed")}
-                          </span>
-                          <span className="text-[11px] text-gray-500">
-                            {supabaseTestMessage.kind === "ok"
-                              ? ct("messages.edge_table_ok", "Edge / 表就绪", "Edge / table OK")
-                              : supabaseTestMessage.kind === "warn"
-                                ? ct("messages.run_001_init_sql", "请执行 001_init.sql", "Run 001_init.sql")
-                                : ct("messages.see_details_below", "请根据下方说明排查", "See details below")}
-                          </span>
-                        </div>
-                        <p
-                          className={`mt-1.5 text-xs leading-relaxed whitespace-pre-wrap break-words ${
-                            supabaseTestMessage.kind === "ok"
-                              ? "text-emerald-800"
-                              : supabaseTestMessage.kind === "warn"
-                                ? "text-amber-900"
-                                : "text-red-700"
-                          }`}
-                        >
-                          {supabaseTestMessage.text}
-                        </p>
-                      </>
-                    ) : (
-                      <p className="text-xs text-gray-400">
-                        {ct("messages.click_test_connection_status_appears_here", "点击左侧按钮后，此处显示连接是否正常。", "Click \"Test Connection\" — status appears here.")}
-                      </p>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Which modules use this connection */}
-            <div className="bg-white rounded-xl border border-gray-200 p-4 space-y-3">
-              <h4 className="text-sm text-gray-700">{ct("messages.modules_using_this_connection", "依赖此连接的功能模块", "Modules using this connection")}</h4>
-              {([
-                { label: ct("messages.im_backend_proxy", "IM 后端代理", "IM Backend Proxy"), tab: "backendProxy", desc: ct("messages.chat_messaging_token_generation", "聊天消息收发、Token生成", "Chat messaging, token generation"), field: "backendProxyConfig.enabled" },
-                { label: ct("messages.cloud_ai_analysis", "云端 AI 分析", "Cloud AI Analysis"), tab: "aiModel", desc: ct("messages.pest_analysis_qwen_gemini_gpt_4o", "病虫害深度分析（通义千问/Gemini/GPT-4o）", "Pest analysis (Qwen/Gemini/GPT-4o)"), field: "cloudAIConfig.enabled" },
-                { label: ct("messages.push_notifications", "推送服务", "Push Notifications"), tab: "pushProviders", desc: ct("messages.push_proxy_vapid_fcm_jpush_getui", "消息推送代理（VAPID/FCM/极光/个推）", "Push proxy (VAPID/FCM/JPush/GeTui)"), field: "pushProvidersConfig" },
-                { label: ct("messages.login_auth", "登录认证", "Login Auth"), tab: "loginConfig", desc: ct("messages.which_login_buttons_to_show", "登录页显示哪些入口", "Which login buttons to show"), field: "loginConfig" },
-              ] as const).map((mod) => {
-                const isEnabled = mod.field === 'backendProxyConfig.enabled' ? workingConfig.backendProxyConfig?.enabled
-                  : mod.field === 'cloudAIConfig.enabled' ? workingConfig.cloudAIConfig?.enabled
-                  : true;
-                return (
-                  <button
-                    key={mod.tab}
-                    onClick={() => setActiveTab(mod.tab as any)}
-                    className="w-full text-start flex items-center gap-3 p-3 rounded-lg border border-gray-100 hover:bg-gray-50 transition-colors"
-                  >
-                    <div className={`w-2 h-2 rounded-full flex-shrink-0 ${isEnabled ? 'bg-emerald-500' : 'bg-gray-300'}`} />
-                    <div className="flex-1 min-w-0">
-                      <span className="text-sm text-gray-800">{mod.label}</span>
-                      <p className="text-[11px] text-gray-400 truncate">{mod.desc}</p>
-                    </div>
-                    <ChevronRight className="w-4 h-4 text-gray-400 flex-shrink-0" />
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* Security */}
-            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
-              <p className="text-xs text-amber-800 mb-2">{ct("messages.security_notes", "安全须知", "Security Notes")}</p>
-              <ul className="text-[11px] text-amber-700 space-y-1 list-disc list-inside">
-                <li>{ct("messages.only_anon_key_public_is_stored_here_all", "此处只存放 Anon Key（公开），所有 API 密钥/Secret 必须存放在服务端环境变量中（如 Supabase Secrets、Cloudflare 环境变量等）", "Only Anon Key (public) is stored here. All API keys/secrets must be in server-side env vars (Supabase Secrets, Cloudflare env, etc.)")}</li>
-                <li>{ct("messages.service_role_key_must_never_be_in_frontend", "Service Role Key 绝对不能放在前端代码中", "Service Role Key must NEVER be in frontend code")}</li>
-              </ul>
-            </div>
-
-            {/* Remote Config Sync Status */}
-            <div className="bg-white rounded-xl border border-gray-200 p-4 space-y-3">
-              <h4 className="text-sm text-gray-800 flex items-center gap-2">
-                <Cloud className="w-4 h-4" />
-                {ct("messages.remote_config_sync", "远程配置同步", "Remote Config Sync")}
-              </h4>
-              <p className="text-[11px] text-gray-500">{ct("messages.the_top_preview_button_saves_locally_for_in", "顶部「预览」仅写本机以便在应用内查看；「推送到云端」才把配置同步到服务器。农户/门店端在打开或回到前台时会自动合并远程配置。下方状态为最近一次拉取远程的结果与版本号。", "The top “Preview” button saves locally for in-app review only; “Push to cloud” syncs config to the server. Farmer/store apps merge remote config on open or when returning to foreground. Status below shows the last remote fetch and version.")}</p>
-
-              {/* Sync Status Indicator */}
-              <div className={`flex items-center gap-3 p-3 rounded-lg border ${
-                syncStatus === 'synced' ? 'bg-emerald-50 border-emerald-200' :
-                syncStatus === 'syncing' ? 'bg-blue-50 border-blue-200' :
-                syncStatus === 'error' || syncStatus === 'conflict' ? 'bg-red-50 border-red-200' :
-                syncStatus === 'offline' ? 'bg-amber-50 border-amber-200' :
-                'bg-gray-50 border-gray-200'
-              }`}>
-                {syncStatus === 'synced' && <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />}
-                {syncStatus === 'syncing' && <Loader2 className="w-4 h-4 text-blue-600 flex-shrink-0 animate-spin" />}
-                {syncStatus === 'error' && <AlertTriangle className="w-4 h-4 text-red-600 flex-shrink-0" />}
-                {syncStatus === 'conflict' && <AlertTriangle className="w-4 h-4 text-red-600 flex-shrink-0" />}
-                {syncStatus === 'offline' && <CloudOff className="w-4 h-4 text-amber-600 flex-shrink-0" />}
-                {syncStatus === 'idle' && <Cloud className="w-4 h-4 text-gray-400 flex-shrink-0" />}
-
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm text-gray-800">
-                    {syncStatus === 'synced' && ct("messages.remote_version_ok", "远程版本已探测", "Remote version OK")}
-                    {syncStatus === 'syncing' && ct("messages.probing_remote", "探测远程中...", "Probing remote...")}
-                    {syncStatus === 'error' && ct("messages.sync_failed", "同步失败", "Sync Failed")}
-                    {syncStatus === 'conflict' && ct("messages.version_conflict", "版本冲突", "Version Conflict")}
-                    {syncStatus === 'offline' && ct("messages.offline", "离线模式", "Offline")}
-                    {syncStatus === 'idle' && ct("messages.remote_not_connected", "未连接远程", "Remote Not Connected")}
-                  </p>
-                  {lastSyncError && (syncStatus === 'error' || syncStatus === 'conflict') && (
-                    <p className="text-[11px] text-red-600 truncate mt-0.5">{lastSyncError}</p>
-                  )}
-                  {lastSyncTime && (
-                    <p className="text-[11px] text-gray-400 mt-0.5">
-                      {ct("messages.last_probe", "上次探测", "Last probe")}: {new Date(lastSyncTime).toLocaleTimeString()}
-                    </p>
-                  )}
-                </div>
-
-                <div className="flex-shrink-0 text-right">
-                  {remoteVersion !== null && (
-                    <span className="text-[11px] text-gray-400">v{remoteVersion}</span>
-                  )}
-                </div>
-              </div>
-
-            </div>
-          </div>
+          <React.Suspense fallback={cmsTabFallback}>
+            <SupabaseTab workingConfig={workingConfig} patchSection={patchSection} ct={ct} onOpenTab={setActiveTab} />
+          </React.Suspense>
         ) : activeTab === "homeIcons" ? (
           <div className="space-y-4">
             <div className="bg-white rounded-xl border border-gray-200 p-4 space-y-2">
@@ -3044,11 +2011,7 @@ export default function ConfigManagerPage() {
                   type="text"
                   value={workingConfig.homeIcons?.aiAssistantLabel || ""}
                   onChange={(e) => {
-                    const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                    if (!newConfig.homeIcons) newConfig.homeIcons = {};
-                    newConfig.homeIcons.aiAssistantLabel = e.target.value;
-                    setWorkingConfig(newConfig);
-                    setHasChanges(true);
+                    patchSection("homeIcons", { aiAssistantLabel: e.target.value });
                   }}
                   placeholder={ct("messages.leave_empty_for_default_ai_assistant", "留空使用默认：AI 助手", "Leave empty for default: AI Assistant")}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-sm"
@@ -3058,11 +2021,7 @@ export default function ConfigManagerPage() {
                 label={ct("messages.icon_url", "图标URL", "Icon URL")}
                 value={workingConfig.homeIcons?.aiAssistantIconUrl || ""}
                 onChange={(v: string) => {
-                  const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                  if (!newConfig.homeIcons) newConfig.homeIcons = {};
-                  newConfig.homeIcons.aiAssistantIconUrl = v;
-                  setWorkingConfig(newConfig);
-                  setHasChanges(true);
+                  patchSection("homeIcons", { aiAssistantIconUrl: v });
                 }}
                 mode="image"
               />
@@ -3087,11 +2046,7 @@ export default function ConfigManagerPage() {
                   type="text"
                   value={workingConfig.homeIcons?.statementLabel || ""}
                   onChange={(e) => {
-                    const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                    if (!newConfig.homeIcons) newConfig.homeIcons = {};
-                    newConfig.homeIcons.statementLabel = e.target.value;
-                    setWorkingConfig(newConfig);
-                    setHasChanges(true);
+                    patchSection("homeIcons", { statementLabel: e.target.value });
                   }}
                   placeholder={ct("messages.leave_empty_for_default_statement", "留空使用默认：对账单", "Leave empty for default: Statement")}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-sm"
@@ -3101,11 +2056,7 @@ export default function ConfigManagerPage() {
                 label={ct("messages.icon_url", "图标URL", "Icon URL")}
                 value={workingConfig.homeIcons?.statementIconUrl || ""}
                 onChange={(v: string) => {
-                  const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                  if (!newConfig.homeIcons) newConfig.homeIcons = {};
-                  newConfig.homeIcons.statementIconUrl = v;
-                  setWorkingConfig(newConfig);
-                  setHasChanges(true);
+                  patchSection("homeIcons", { statementIconUrl: v });
                 }}
                 mode="image"
               />
@@ -3130,11 +2081,7 @@ export default function ConfigManagerPage() {
                   type="text"
                   value={workingConfig.homeIcons?.liveTitle || ""}
                   onChange={(e) => {
-                    const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                    if (!newConfig.homeIcons) newConfig.homeIcons = {};
-                    newConfig.homeIcons.liveTitle = e.target.value;
-                    setWorkingConfig(newConfig);
-                    setHasChanges(true);
+                    patchSection("homeIcons", { liveTitle: e.target.value });
                   }}
                   placeholder={ct("messages.leave_empty_for_first_live_stream_title", "留空使用第一条直播标题，如：水稻种植技术讲解", "Leave empty for first live stream title")}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-sm"
@@ -3147,11 +2094,7 @@ export default function ConfigManagerPage() {
                   type="text"
                   value={workingConfig.homeIcons?.liveBadge || ""}
                   onChange={(e) => {
-                    const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                    if (!newConfig.homeIcons) newConfig.homeIcons = {};
-                    newConfig.homeIcons.liveBadge = e.target.value;
-                    setWorkingConfig(newConfig);
-                    setHasChanges(true);
+                    patchSection("homeIcons", { liveBadge: e.target.value });
                   }}
                   placeholder={ct("messages.leave_empty_for_default_live_navigation", "留空使用默认：直播&导航", "Leave empty for default: Live & Navigation")}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-sm"
@@ -3162,11 +2105,7 @@ export default function ConfigManagerPage() {
                 label={ct("messages.cover_image_url", "封面图URL", "Cover Image URL")}
                 value={workingConfig.homeIcons?.liveCoverUrl || ""}
                 onChange={(v: string) => {
-                  const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                  if (!newConfig.homeIcons) newConfig.homeIcons = {};
-                  newConfig.homeIcons.liveCoverUrl = v;
-                  setWorkingConfig(newConfig);
-                  setHasChanges(true);
+                  patchSection("homeIcons", { liveCoverUrl: v });
                 }}
                 mode="image"
               />
@@ -3215,10 +2154,7 @@ export default function ConfigManagerPage() {
                   type="text"
                   value={workingConfig.desktopIcon.appName || ""}
                   onChange={(e) => {
-                    const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                    newConfig.desktopIcon.appName = e.target.value;
-                    setWorkingConfig(newConfig);
-                    setHasChanges(true);
+                    patchSection("desktopIcon", { appName: e.target.value });
                   }}
                   placeholder="TaprootAgro"
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
@@ -3248,10 +2184,7 @@ export default function ConfigManagerPage() {
                 label={ct("messages.m_192_192_icon_url", "192×192 图标链接", "192×192 Icon URL")}
                 value={workingConfig.desktopIcon.icon192Url || ""}
                 onChange={(v: string) => {
-                  const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                  newConfig.desktopIcon.icon192Url = v;
-                  setWorkingConfig(newConfig);
-                  setHasChanges(true);
+                  patchSection("desktopIcon", { icon192Url: v });
                 }}
                 mode="image"
               />
@@ -3260,10 +2193,7 @@ export default function ConfigManagerPage() {
                 label={ct("messages.m_512_512_icon_url", "512×512 图标链接", "512×512 Icon URL")}
                 value={workingConfig.desktopIcon.icon512Url || ""}
                 onChange={(v: string) => {
-                  const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                  newConfig.desktopIcon.icon512Url = v;
-                  setWorkingConfig(newConfig);
-                  setHasChanges(true);
+                  patchSection("desktopIcon", { icon512Url: v });
                 }}
                 mode="image"
               />
@@ -3276,731 +2206,9 @@ export default function ConfigManagerPage() {
             </div>
           </div>
         ) : activeTab === "aiModel" ? (
-          <div className="space-y-4">
-            <div className="bg-white rounded-xl border border-gray-200 p-4 space-y-4">
-              <h3 className="text-base text-gray-800 mb-2">{ct("messages.ai_pest_disease_detection_model_config", "AI 病虫害识别模型配置", "AI Pest & Disease Detection Model Config")}</h3>
-              <p className="text-xs text-gray-500 -mt-2">{ct("messages.online_deep_analysis_uses_third_party_cloud_llms", "在线深度分析依赖第三方云端大模型（经 Supabase Edge 代理）。本地 ONNX 与在线 AI 可分别开关；默认仅开启在线。关闭在线后不会请求云端；关闭本地后断网不再回退端侧推理。", "Online deep analysis uses third-party cloud LLMs (via Supabase Edge). Local ONNX and online AI can be toggled independently; default is online only. When online AI is off, no cloud requests are made. When local is off, the app does not fall back to on-device inference offline.")}</p>
-
-              {/* Mode indicator */}
-              <div className="flex items-center gap-2 bg-gray-50 rounded-lg p-3">
-                <div className={`w-2 h-2 rounded-full ${
-                  (() => {
-                    const cOn = workingConfig.cloudAIConfig?.enabled === true;
-                    const lOn = workingConfig.aiModelConfig?.enableLocalModel === true;
-                    if (!cOn && !lOn) return "bg-red-400";
-                    if (cOn && lOn) return "bg-emerald-500";
-                    return cOn ? "bg-violet-500" : "bg-amber-500";
-                  })()
-                }`} />
-                <span className="text-xs text-gray-600">
-                  {(() => {
-                    const cOn = workingConfig.cloudAIConfig?.enabled === true;
-                    const lOn = workingConfig.aiModelConfig?.enableLocalModel === true;
-                    const hasUrl = !!(workingConfig.aiModelConfig?.modelUrl && workingConfig.aiModelConfig.modelUrl.startsWith("http"));
-                    if (!cOn && !lOn) {
-                      return ct("messages.current_both_local_and_online_ai_are_off", "当前：本地与在线 AI 均已关闭，农户端将无法使用 AI 能力", "Current: Both local and online AI are off — the farmer app cannot use AI.");
-                    }
-                    if (cOn && lOn) {
-                      return hasUrl
-                        ? ct("messages.current_cloud_when_online_offline_can_use_local", "当前：联网走第三方云端；断网可走本地 ONNX（已配置模型 URL）", "Current: Cloud when online; offline can use local ONNX (model URL set).")
-                        : ct("messages.current_cloud_when_online_local_is_on_but", "当前：联网走云端；本地已开但未配置有效模型 URL 时断网能力受限", "Current: Cloud when online; local is on but without a valid model URL, offline use is limited.");
-                    }
-                    if (cOn && !lOn) {
-                      return ct("messages.current_third_party_online_ai_only_no_deep", "当前：仅第三方在线 AI（断网无深度分析、不回退本地）", "Current: Third-party online AI only (no deep analysis offline, no local fallback).");
-                    }
-                    return ct("messages.current_local_onnx_only_configure_model_url_no", "当前：仅本地 ONNX（需配置模型 URL；不调用云端）", "Current: Local ONNX only (configure model URL; no cloud calls).");
-                  })()}
-                </span>
-              </div>
-
-              {/* Local ONNX enable */}
-              <div className="flex items-center justify-between py-2 border-b border-gray-100">
-                <div>
-                  <label className="block text-sm text-gray-700">{ct("messages.enable_local_onnx_inference", "启用本地 ONNX 推理", "Enable local ONNX inference")}</label>
-                  <p className="text-[11px] text-gray-400">{ct("messages.when_off_the_app_does_not_load_or", "关闭后不再加载/运行端侧模型，断网也不回退本地。", "When off, the app does not load or run on-device models, even offline.")}</p>
-                </div>
-                <button
-                  onClick={() => {
-                    const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                    const prev = newConfig.aiModelConfig || {};
-                    newConfig.aiModelConfig = {
-                      modelUrl: prev.modelUrl ?? "",
-                      labelsUrl: prev.labelsUrl ?? "",
-                      enableLocalModel: !(prev.enableLocalModel ?? false),
-                    };
-                    setWorkingConfig(newConfig);
-                    setHasChanges(true);
-                  }}
-                  className={`relative w-12 h-6 rounded-full transition-colors ${
-                    workingConfig.aiModelConfig?.enableLocalModel ? "bg-emerald-500" : "bg-gray-300"
-                  }`}
-                >
-                  <div className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
-                    workingConfig.aiModelConfig?.enableLocalModel ? "translate-x-6" : "translate-x-0.5"
-                  }`} />
-                </button>
-              </div>
-
-              {/* Model URL */}
-              <div>
-                <label className="block text-sm text-gray-700 mb-1">{ct("messages.onnx_model_file_url", "ONNX 模型文件 URL", "ONNX Model File URL")}</label>
-                <input
-                  type="text"
-                  value={workingConfig.aiModelConfig?.modelUrl || ""}
-                  onChange={(e) => {
-                    const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                    const prev = newConfig.aiModelConfig || {};
-                    newConfig.aiModelConfig = {
-                      modelUrl: e.target.value,
-                      labelsUrl: prev.labelsUrl ?? "",
-                      enableLocalModel: prev.enableLocalModel ?? false,
-                    };
-                    setWorkingConfig(newConfig);
-                    setHasChanges(true);
-                  }}
-                  placeholder="https://cdn.example.com/models/taprootagro.onnx"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 font-mono text-xs"
-                />
-                <p className="mt-1 text-[11px] text-gray-400">{ct("messages.supports_any_publicly_accessible_url_oss_cdn_github", "支持任何可公开访问的URL（如 OSS、CDN、GitHub Release 等），文件格式需为 ONNX", "Supports any publicly accessible URL (OSS, CDN, GitHub Release, etc.), file must be in ONNX format")}</p>
-              </div>
-
-              {/* Labels URL */}
-              <div>
-                <label className="block text-sm text-gray-700 mb-1">{ct("messages.labels_file_url", "标签文件 URL", "Labels File URL")}</label>
-                <input
-                  type="text"
-                  value={workingConfig.aiModelConfig?.labelsUrl || ""}
-                  onChange={(e) => {
-                    const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                    const prev = newConfig.aiModelConfig || {};
-                    newConfig.aiModelConfig = {
-                      modelUrl: prev.modelUrl ?? "",
-                      labelsUrl: e.target.value,
-                      enableLocalModel: prev.enableLocalModel ?? false,
-                    };
-                    setWorkingConfig(newConfig);
-                    setHasChanges(true);
-                  }}
-                  placeholder="https://cdn.example.com/models/labels.json"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 font-mono text-xs"
-                />
-                <p className="mt-1 text-[11px] text-gray-400">{ct("messages.json_array_format_e_g_rice_blast_powdery", "JSON 数组格式，例如：[\"稻瘟病\",\"白粉病\",\"蚜虫\",...]", "JSON array format, e.g.: [\"Rice Blast\",\"Powdery Mildew\",\"Aphids\",...]")}</p>
-              </div>
-
-              {/* Status indicator */}
-              <div className="pt-3 border-t border-gray-100">
-                <div className="flex items-center gap-2">
-                  <div className={`w-2 h-2 rounded-full ${
-                    (workingConfig.aiModelConfig?.modelUrl && workingConfig.aiModelConfig.modelUrl.startsWith("http"))
-                      ? "bg-emerald-500"
-                      : "bg-gray-300"
-                  }`} />
-                  <span className="text-xs text-gray-600">
-                    {(workingConfig.aiModelConfig?.modelUrl && workingConfig.aiModelConfig.modelUrl.startsWith("http"))
-                      ? ct("messages.remote_model_configured", "已配置远程模型", "Remote model configured")
-                      : ct("messages.not_configured_will_use_local_files_or_demo", "未配置（将使用本地文件或演示模式）", "Not configured (will use local files or demo mode)")
-                    }
-                  </span>
-                </div>
-              </div>
-
-              {/* Help section */}
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mt-3">
-                <p className="text-xs text-blue-800 mb-2">{ct("messages.usage_guide", "使用指南：", "Usage Guide:")}</p>
-                <ol className="text-[11px] text-blue-700 space-y-1 list-decimal list-inside">
-                  <li>{ct("messages.train_your_pest_disease_detection_model_with_your", "用你的病虫害数据集训练检测模型", "Train your pest & disease detection model with your dataset")}</li>
-                  <li>{ct("messages.export_to_onnx_python_export_model_py_format", "导出为 ONNX：python export_model.py --format onnx --imgsz 640", "Export to ONNX: python export_model.py --format onnx --imgsz 640")}</li>
-                  <li>{ct("messages.upload_onnx_and_labels_json_to_your_cdn", "将 .onnx 和 labels.json 上传到你的 CDN 或对象存储", "Upload .onnx and labels.json to your CDN or object storage")}</li>
-                  <li>{ct("messages.paste_the_urls_into_the_fields_above_save", "将 URL 填入上方输入框，保存配置即可生效", "Paste the URLs into the fields above, save config to apply")}</li>
-                </ol>
-              </div>
-
-            </div>
-
-            {/* Cloud AI Deep Analysis Config Section */}
-            <div className="bg-white rounded-xl border border-gray-200 p-4 space-y-4">
-              <h3 className="text-base text-gray-800 mb-2">{ct("messages.cloud_ai_analysis_config_backend_proxy", "云端AI分析配置（后端代理模式）", "Cloud AI Analysis Config (Backend Proxy)")}</h3>
-              <p className="text-xs text-gray-500 -mt-2">{ct("messages.configure_third_party_cloud_vision_models_qwen_gemini", "配置第三方云端大模型（如通义千问、Gemini、GPT-4o）。开启且联网时才会请求 Edge 代理；关闭后前端不发起云端请求（也不会使用演示 Mock）。密钥仅存放在 Edge 环境变量中。", "Configure third-party cloud vision models (Qwen, Gemini, GPT-4o, etc.). Requests go to the Edge proxy only when this is on and the device is online. When off, the app does not call the cloud (no demo mock). Secrets live only in Edge env vars.")}</p>
-
-              {/* Enabled Toggle */}
-              <div className="flex items-center justify-between py-2">
-                <div>
-                  <label className="block text-sm text-gray-700">{ct("messages.enable_online_cloud_ai", "启用在线（云端）AI", "Enable online (cloud) AI")}</label>
-                  <p className="text-[11px] text-gray-400">{ct("messages.on_cloud_deep_analysis_when_online_off_no", "开启：联网时可调用第三方云端深度分析；关闭：不请求云端", "On: cloud deep analysis when online. Off: no cloud requests.")}</p>
-                </div>
-                <button
-                  onClick={() => {
-                    const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                    const p = newConfig.cloudAIConfig || {};
-                    newConfig.cloudAIConfig = {
-                      enabled: !(p.enabled ?? false),
-                      providerName: p.providerName ?? "通义千问",
-                      edgeFunctionName: p.edgeFunctionName ?? "ai-vision-proxy",
-                      modelId: p.modelId ?? "qwen-vl-plus",
-                      systemPrompt: p.systemPrompt ?? "",
-                      maxTokens: p.maxTokens ?? 512,
-                      clientDailyLimit: p.clientDailyLimit,
-                      clientCooldownSeconds: p.clientCooldownSeconds,
-                      clientMaxImageSize: p.clientMaxImageSize,
-                      clientImageQuality: p.clientImageQuality,
-                      clientWindowPerMin: p.clientWindowPerMin,
-                      clientChatMinIntervalSeconds: p.clientChatMinIntervalSeconds,
-                      supabaseUrl: p.supabaseUrl ?? "",
-                      supabaseAnonKey: p.supabaseAnonKey ?? "",
-                      allowUnauthenticatedUse: p.allowUnauthenticatedUse ?? false,
-                    };
-                    setWorkingConfig(newConfig);
-                    setHasChanges(true);
-                  }}
-                  className={`relative w-12 h-6 rounded-full transition-colors ${
-                    workingConfig.cloudAIConfig?.enabled ? "bg-emerald-500" : "bg-gray-300"
-                  }`}
-                >
-                  <div className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
-                    workingConfig.cloudAIConfig?.enabled ? "translate-x-6" : "translate-x-0.5"
-                  }`} />
-                </button>
-              </div>
-
-              {/* Allow unauthenticated AI */}
-              <div className="flex items-center justify-between py-2 border-t border-gray-100">
-                <div>
-                  <label className="block text-sm text-gray-700">{ct("messages.allow_unauthenticated_ai", "允许不登录使用 AI", "Allow AI without login")}</label>
-                  <p className="text-[11px] text-amber-600">{ct("messages.allow_unauthenticated_ai_warning", "开启后，未登录用户也可进入 AI 助手并使用云端/本地模型。会公开暴露云端 AI，建议配合 Cloudflare IP 限流。", "When on, guests can open AI Assistant and use cloud/local models. Exposes cloud AI publicly — use Cloudflare IP rate limiting.")}</p>
-                </div>
-                <button
-                  onClick={() => {
-                    const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                    const p = newConfig.cloudAIConfig || {};
-                    newConfig.cloudAIConfig = {
-                      enabled: p.enabled ?? false,
-                      providerName: p.providerName ?? "通义千问",
-                      edgeFunctionName: p.edgeFunctionName ?? "ai-vision-proxy",
-                      modelId: p.modelId ?? "qwen-vl-plus",
-                      systemPrompt: p.systemPrompt ?? "",
-                      maxTokens: p.maxTokens ?? 512,
-                      clientDailyLimit: p.clientDailyLimit,
-                      clientCooldownSeconds: p.clientCooldownSeconds,
-                      clientMaxImageSize: p.clientMaxImageSize,
-                      clientImageQuality: p.clientImageQuality,
-                      clientWindowPerMin: p.clientWindowPerMin,
-                      clientChatMinIntervalSeconds: p.clientChatMinIntervalSeconds,
-                      supabaseUrl: p.supabaseUrl ?? "",
-                      supabaseAnonKey: p.supabaseAnonKey ?? "",
-                      allowUnauthenticatedUse: !(p.allowUnauthenticatedUse ?? false),
-                    };
-                    setWorkingConfig(newConfig);
-                    setHasChanges(true);
-                  }}
-                  className={`relative w-12 h-6 rounded-full transition-colors ${
-                    workingConfig.cloudAIConfig?.allowUnauthenticatedUse ? "bg-emerald-500" : "bg-gray-300"
-                  }`}
-                >
-                  <div className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
-                    workingConfig.cloudAIConfig?.allowUnauthenticatedUse ? "translate-x-6" : "translate-x-0.5"
-                  }`} />
-                </button>
-              </div>
-
-              {/* Supabase for cloud AI only — independent of IM toggle */}
-              <div className="space-y-3 pt-1 border-t border-gray-100">
-                <p className="text-xs text-gray-600">{ct("messages.supabase_for_cloud_vision_only_independent_of_im", "云端识图专用 Supabase（与「启用 IM 直连」无关）。若填写则优先使用；若留空则回退使用 IM 后端代理页中的项目地址（无需开启 IM）。", "Supabase for cloud vision only (independent of IM). If set, used first; if empty, falls back to the Backend Proxy tab URL/key (IM toggle not required).")}</p>
-                <div>
-                  <label className="block text-sm text-gray-700 mb-1">{ct("messages.supabase_project_url_cloud_ai", "Supabase 项目 URL（云端识图）", "Supabase project URL (cloud AI)")}</label>
-                  <input
-                    type="text"
-                    value={workingConfig.cloudAIConfig?.supabaseUrl || ""}
-                    onChange={(e) => {
-                      const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                      const p = newConfig.cloudAIConfig || {};
-                      newConfig.cloudAIConfig = {
-                        enabled: p.enabled ?? false,
-                        providerName: p.providerName ?? "",
-                        edgeFunctionName: p.edgeFunctionName ?? "ai-vision-proxy",
-                        modelId: p.modelId ?? "",
-                        systemPrompt: p.systemPrompt ?? "",
-                        maxTokens: p.maxTokens ?? 512,
-                        clientDailyLimit: p.clientDailyLimit,
-                        clientCooldownSeconds: p.clientCooldownSeconds,
-                        clientMaxImageSize: p.clientMaxImageSize,
-                        clientImageQuality: p.clientImageQuality,
-                        clientWindowPerMin: p.clientWindowPerMin,
-                        clientChatMinIntervalSeconds: p.clientChatMinIntervalSeconds,
-                        supabaseUrl: e.target.value,
-                        supabaseAnonKey: p.supabaseAnonKey ?? "",
-                        allowUnauthenticatedUse: p.allowUnauthenticatedUse ?? false,
-                      };
-                      setWorkingConfig(newConfig);
-                      setHasChanges(true);
-                    }}
-                    placeholder="https://xxxx.supabase.co"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 font-mono text-xs"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm text-gray-700 mb-1">{ct("messages.supabase_anon_key_cloud_ai", "Supabase Anon Key（云端识图）", "Supabase anon key (cloud AI)")}</label>
-                  <input
-                    type="password"
-                    autoComplete="off"
-                    value={workingConfig.cloudAIConfig?.supabaseAnonKey || ""}
-                    onChange={(e) => {
-                      const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                      const p = newConfig.cloudAIConfig || {};
-                      newConfig.cloudAIConfig = {
-                        enabled: p.enabled ?? false,
-                        providerName: p.providerName ?? "",
-                        edgeFunctionName: p.edgeFunctionName ?? "ai-vision-proxy",
-                        modelId: p.modelId ?? "",
-                        systemPrompt: p.systemPrompt ?? "",
-                        maxTokens: p.maxTokens ?? 512,
-                        clientDailyLimit: p.clientDailyLimit,
-                        clientCooldownSeconds: p.clientCooldownSeconds,
-                        clientMaxImageSize: p.clientMaxImageSize,
-                        clientImageQuality: p.clientImageQuality,
-                        clientWindowPerMin: p.clientWindowPerMin,
-                        clientChatMinIntervalSeconds: p.clientChatMinIntervalSeconds,
-                        supabaseUrl: p.supabaseUrl ?? "",
-                        supabaseAnonKey: e.target.value,
-                      };
-                      setWorkingConfig(newConfig);
-                      setHasChanges(true);
-                    }}
-                    placeholder={ct("messages.project_settings_api_anon_public", "项目 Settings → API → anon public", "Project Settings → API → anon public")}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 font-mono text-xs"
-                  />
-                </div>
-              </div>
-
-              {/* Provider Name */}
-              <div>
-                <label className="block text-sm text-gray-700 mb-1">{ct("messages.provider_display_name", "模型提供商显示名称", "Provider Display Name")}</label>
-                <input
-                  type="text"
-                  value={workingConfig.cloudAIConfig?.providerName || ""}
-                  onChange={(e) => {
-                    const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                    const p = newConfig.cloudAIConfig || {};
-                    newConfig.cloudAIConfig = {
-                      enabled: p.enabled ?? false,
-                      providerName: e.target.value,
-                      edgeFunctionName: p.edgeFunctionName ?? "ai-vision-proxy",
-                      modelId: p.modelId ?? "",
-                      systemPrompt: p.systemPrompt ?? "",
-                      maxTokens: p.maxTokens ?? 512,
-                      clientDailyLimit: p.clientDailyLimit,
-                      clientCooldownSeconds: p.clientCooldownSeconds,
-                      clientMaxImageSize: p.clientMaxImageSize,
-                      clientImageQuality: p.clientImageQuality,
-                      clientWindowPerMin: p.clientWindowPerMin,
-                      clientChatMinIntervalSeconds: p.clientChatMinIntervalSeconds,
-                      supabaseUrl: p.supabaseUrl ?? "",
-                      supabaseAnonKey: p.supabaseAnonKey ?? "",
-                      allowUnauthenticatedUse: p.allowUnauthenticatedUse ?? false,
-                    };
-                    setWorkingConfig(newConfig);
-                    setHasChanges(true);
-                  }}
-                  placeholder={ct("messages.e_g_qwen_gemini_gpt_4o", "例如：通义千问、Gemini、GPT-4o", "e.g. Qwen, Gemini, GPT-4o")}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-sm"
-                />
-                <p className="mt-1 text-[11px] text-gray-400">{ct("messages.shown_in_ui_so_users_know_which_ai", "用于UI显示，让用户知道使用的是哪个AI模型", "Shown in UI so users know which AI model is used")}</p>
-              </div>
-
-              {/* Edge Function Name */}
-              <div>
-                <label className="block text-sm text-gray-700 mb-1">{ct("messages.edge_function_name", "Edge Function 名称", "Edge Function Name")}</label>
-                <input
-                  type="text"
-                  value={workingConfig.cloudAIConfig?.edgeFunctionName || "ai-vision-proxy"}
-                  onChange={(e) => {
-                    const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                    const p = newConfig.cloudAIConfig || {};
-                    newConfig.cloudAIConfig = {
-                      enabled: p.enabled ?? false,
-                      providerName: p.providerName ?? "",
-                      edgeFunctionName: e.target.value,
-                      modelId: p.modelId ?? "",
-                      systemPrompt: p.systemPrompt ?? "",
-                      maxTokens: p.maxTokens ?? 512,
-                      clientDailyLimit: p.clientDailyLimit,
-                      clientCooldownSeconds: p.clientCooldownSeconds,
-                      clientMaxImageSize: p.clientMaxImageSize,
-                      clientImageQuality: p.clientImageQuality,
-                      clientWindowPerMin: p.clientWindowPerMin,
-                      clientChatMinIntervalSeconds: p.clientChatMinIntervalSeconds,
-                      supabaseUrl: p.supabaseUrl ?? "",
-                      supabaseAnonKey: p.supabaseAnonKey ?? "",
-                      allowUnauthenticatedUse: p.allowUnauthenticatedUse ?? false,
-                    };
-                    setWorkingConfig(newConfig);
-                    setHasChanges(true);
-                  }}
-                  placeholder="ai-vision-proxy"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 font-mono text-xs"
-                />
-                <p className="mt-1 text-[11px] text-gray-400">{ct("messages.supabase_edge_function_name_maps_to_supabase_functions", "Supabase Edge Function 名称，对应 supabase/functions/ai-vision-proxy/index.ts", "Supabase Edge Function name, maps to supabase/functions/ai-vision-proxy/index.ts")}</p>
-              </div>
-
-              {/* Model ID */}
-              <div>
-                <label className="block text-sm text-gray-700 mb-1">{ct("messages.model_id", "模型标识 (Model ID)", "Model ID")}</label>
-                <input
-                  type="text"
-                  value={workingConfig.cloudAIConfig?.modelId || ""}
-                  onChange={(e) => {
-                    const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                    const p = newConfig.cloudAIConfig || {};
-                    newConfig.cloudAIConfig = {
-                      enabled: p.enabled ?? false,
-                      providerName: p.providerName ?? "",
-                      edgeFunctionName: p.edgeFunctionName ?? "ai-vision-proxy",
-                      modelId: e.target.value,
-                      systemPrompt: p.systemPrompt ?? "",
-                      maxTokens: p.maxTokens ?? 512,
-                      clientDailyLimit: p.clientDailyLimit,
-                      clientCooldownSeconds: p.clientCooldownSeconds,
-                      clientMaxImageSize: p.clientMaxImageSize,
-                      clientImageQuality: p.clientImageQuality,
-                      clientWindowPerMin: p.clientWindowPerMin,
-                      clientChatMinIntervalSeconds: p.clientChatMinIntervalSeconds,
-                      supabaseUrl: p.supabaseUrl ?? "",
-                      supabaseAnonKey: p.supabaseAnonKey ?? "",
-                      allowUnauthenticatedUse: p.allowUnauthenticatedUse ?? false,
-                    };
-                    setWorkingConfig(newConfig);
-                    setHasChanges(true);
-                  }}
-                  placeholder={ct("messages.e_g_qwen_vl_plus_gemini_2_0", "例如：qwen-vl-plus, gemini-2.0-flash, gpt-4o", "e.g. qwen-vl-plus, gemini-2.0-flash, gpt-4o")}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 font-mono text-xs"
-                />
-                <p className="mt-1 text-[11px] text-gray-400">{ct("messages.passed_to_edge_function_which_routes_to_the", "传给 Edge Function 的模型标识，由 Edge Function 路由到对应的 API", "Passed to Edge Function, which routes to the correct provider API")}</p>
-              </div>
-
-              {/* System Prompt */}
-              <div>
-                <label className="block text-sm text-gray-700 mb-1">{ct("messages.system_prompt", "系统提示词 (System Prompt)", "System Prompt")}</label>
-                <textarea
-                  value={workingConfig.cloudAIConfig?.systemPrompt || ""}
-                  onChange={(e) => {
-                    const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                    const p = newConfig.cloudAIConfig || {};
-                    newConfig.cloudAIConfig = {
-                      enabled: p.enabled ?? false,
-                      providerName: p.providerName ?? "",
-                      edgeFunctionName: p.edgeFunctionName ?? "ai-vision-proxy",
-                      modelId: p.modelId ?? "",
-                      systemPrompt: e.target.value,
-                      maxTokens: p.maxTokens ?? 512,
-                      clientDailyLimit: p.clientDailyLimit,
-                      clientCooldownSeconds: p.clientCooldownSeconds,
-                      clientMaxImageSize: p.clientMaxImageSize,
-                      clientImageQuality: p.clientImageQuality,
-                      clientWindowPerMin: p.clientWindowPerMin,
-                      clientChatMinIntervalSeconds: p.clientChatMinIntervalSeconds,
-                      supabaseUrl: p.supabaseUrl ?? "",
-                      supabaseAnonKey: p.supabaseAnonKey ?? "",
-                      allowUnauthenticatedUse: p.allowUnauthenticatedUse ?? false,
-                    };
-                    setWorkingConfig(newConfig);
-                    setHasChanges(true);
-                  }}
-                  rows={4}
-                  placeholder={ct("messages.you_are_an_agricultural_pest_disease_expert_analyze", "你是一个农业病虫害专家。请分析图片中的作物病虫害情况，给出详细的诊断、严重程度评估和防治建议...", "You are an agricultural pest & disease expert. Analyze the crop image, provide detailed diagnosis, severity assessment, and treatment recommendations...")}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-xs"
-                />
-                <p className="mt-1 text-[11px] text-gray-400">{ct("messages.customize_the_system_prompt_for_specific_crops_or", "自定义系统提示词，可针对特定作物或地区调整分析侧重点。留空则使用Edge Function默认提示词", "Customize the system prompt for specific crops or regions. Leave empty to use Edge Function defaults")}</p>
-              </div>
-
-              {/* Max Tokens */}
-              <div>
-                <label className="block text-sm text-gray-700 mb-1">{ct("messages.max_output_tokens", "最大输出长度 (Max Tokens)", "Max Output Tokens")}</label>
-                <input
-                  type="number"
-                  value={workingConfig.cloudAIConfig?.maxTokens || 512}
-                  onChange={(e) => {
-                    const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                    const p = newConfig.cloudAIConfig || {};
-                    newConfig.cloudAIConfig = {
-                      enabled: p.enabled ?? false,
-                      providerName: p.providerName ?? "",
-                      edgeFunctionName: p.edgeFunctionName ?? "ai-vision-proxy",
-                      modelId: p.modelId ?? "",
-                      systemPrompt: p.systemPrompt ?? "",
-                      maxTokens: parseInt(e.target.value) || 512,
-                      clientDailyLimit: p.clientDailyLimit,
-                      clientCooldownSeconds: p.clientCooldownSeconds,
-                      clientMaxImageSize: p.clientMaxImageSize,
-                      clientImageQuality: p.clientImageQuality,
-                      clientWindowPerMin: p.clientWindowPerMin,
-                      clientChatMinIntervalSeconds: p.clientChatMinIntervalSeconds,
-                      supabaseUrl: p.supabaseUrl ?? "",
-                      supabaseAnonKey: p.supabaseAnonKey ?? "",
-                      allowUnauthenticatedUse: p.allowUnauthenticatedUse ?? false,
-                    };
-                    setWorkingConfig(newConfig);
-                    setHasChanges(true);
-                  }}
-                  min={128}
-                  max={4096}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-sm"
-                />
-                <p className="mt-1 text-[11px] text-gray-400">{ct("messages.controls_the_length_of_ai_generated_reports_recommended", "控制AI生成的分析报告长度，建议 512-2048", "Controls the length of AI-generated reports. Recommended: 512-2048")}</p>
-              </div>
-
-              {/* Client-side rate limits (optional overrides) */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-gray-100">
-                <div>
-                  <label className="block text-sm text-gray-700 mb-1">{ct("messages.client_daily_call_limit", "前端日调用上限", "Client daily call limit")}</label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={999}
-                    value={workingConfig.cloudAIConfig?.clientDailyLimit ?? ""}
-                    placeholder="15"
-                    onChange={(e) => {
-                      const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                      const p = newConfig.cloudAIConfig || {};
-                      const raw = e.target.value;
-                      newConfig.cloudAIConfig = {
-                        enabled: p.enabled ?? false,
-                        providerName: p.providerName ?? "",
-                        edgeFunctionName: p.edgeFunctionName ?? "ai-vision-proxy",
-                        modelId: p.modelId ?? "",
-                        systemPrompt: p.systemPrompt ?? "",
-                        maxTokens: p.maxTokens ?? 512,
-                        clientDailyLimit: raw === "" ? undefined : Math.min(999, Math.max(1, parseInt(raw, 10) || 0)),
-                        clientCooldownSeconds: p.clientCooldownSeconds,
-                        clientMaxImageSize: p.clientMaxImageSize,
-                        clientImageQuality: p.clientImageQuality,
-                        clientWindowPerMin: p.clientWindowPerMin,
-                        clientChatMinIntervalSeconds: p.clientChatMinIntervalSeconds,
-                        supabaseUrl: p.supabaseUrl ?? "",
-                        supabaseAnonKey: p.supabaseAnonKey ?? "",
-                        allowUnauthenticatedUse: p.allowUnauthenticatedUse ?? false,
-                      };
-                      if (raw === "" || !newConfig.cloudAIConfig.clientDailyLimit) delete newConfig.cloudAIConfig.clientDailyLimit;
-                      setWorkingConfig(newConfig);
-                      setHasChanges(true);
-                    }}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
-                  />
-                  <p className="mt-1 text-[11px] text-gray-400">{ct("messages.leave_empty_for_built_in_default_15_day", "留空使用内置默认（约 15 次/天）", "Leave empty for built-in default (~15/day)")}</p>
-                </div>
-                <div>
-                  <label className="block text-sm text-gray-700 mb-1">{ct("messages.min_interval_seconds", "调用间隔（秒）", "Min interval (seconds)")}</label>
-                  <input
-                    type="number"
-                    min={0}
-                    max={3600}
-                    value={workingConfig.cloudAIConfig?.clientCooldownSeconds ?? ""}
-                    placeholder="20"
-                    onChange={(e) => {
-                      const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                      const p = newConfig.cloudAIConfig || {};
-                      const raw = e.target.value;
-                      const v = raw === "" ? undefined : Math.min(3600, Math.max(0, parseInt(raw, 10) || 0));
-                      newConfig.cloudAIConfig = {
-                        enabled: p.enabled ?? false,
-                        providerName: p.providerName ?? "",
-                        edgeFunctionName: p.edgeFunctionName ?? "ai-vision-proxy",
-                        modelId: p.modelId ?? "",
-                        systemPrompt: p.systemPrompt ?? "",
-                        maxTokens: p.maxTokens ?? 512,
-                        clientDailyLimit: p.clientDailyLimit,
-                        clientCooldownSeconds: v,
-                        clientMaxImageSize: p.clientMaxImageSize,
-                        clientImageQuality: p.clientImageQuality,
-                        clientWindowPerMin: p.clientWindowPerMin,
-                        clientChatMinIntervalSeconds: p.clientChatMinIntervalSeconds,
-                        supabaseUrl: p.supabaseUrl ?? "",
-                        supabaseAnonKey: p.supabaseAnonKey ?? "",
-                        allowUnauthenticatedUse: p.allowUnauthenticatedUse ?? false,
-                      };
-                      if (raw === "" || newConfig.cloudAIConfig.clientCooldownSeconds === undefined) delete newConfig.cloudAIConfig.clientCooldownSeconds;
-                      setWorkingConfig(newConfig);
-                      setHasChanges(true);
-                    }}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
-                  />
-                  <p className="mt-1 text-[11px] text-gray-400">{ct("messages.leave_empty_for_built_in_default_20s", "留空使用内置默认（约 20 秒）", "Leave empty for built-in default (~20s)")}</p>
-                </div>
-                <div>
-                  <label className="block text-sm text-gray-700 mb-1">{ct("messages.max_requests_per_minute_window", "每分钟请求上限", "Max requests per minute (window)")}</label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={200}
-                    value={workingConfig.cloudAIConfig?.clientWindowPerMin ?? ""}
-                    placeholder="6"
-                    onChange={(e) => {
-                      const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                      const p = newConfig.cloudAIConfig || {};
-                      const raw = e.target.value;
-                      const v = raw === "" ? undefined : Math.min(200, Math.max(1, parseInt(raw, 10) || 0));
-                      newConfig.cloudAIConfig = {
-                        enabled: p.enabled ?? false,
-                        providerName: p.providerName ?? "",
-                        edgeFunctionName: p.edgeFunctionName ?? "ai-vision-proxy",
-                        modelId: p.modelId ?? "",
-                        systemPrompt: p.systemPrompt ?? "",
-                        maxTokens: p.maxTokens ?? 512,
-                        clientDailyLimit: p.clientDailyLimit,
-                        clientCooldownSeconds: p.clientCooldownSeconds,
-                        clientMaxImageSize: p.clientMaxImageSize,
-                        clientImageQuality: p.clientImageQuality,
-                        clientWindowPerMin: v,
-                        clientChatMinIntervalSeconds: p.clientChatMinIntervalSeconds,
-                        supabaseUrl: p.supabaseUrl ?? "",
-                        supabaseAnonKey: p.supabaseAnonKey ?? "",
-                        allowUnauthenticatedUse: p.allowUnauthenticatedUse ?? false,
-                      };
-                      if (raw === "" || newConfig.cloudAIConfig.clientWindowPerMin === undefined) delete newConfig.cloudAIConfig.clientWindowPerMin;
-                      setWorkingConfig(newConfig);
-                      setHasChanges(true);
-                    }}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
-                  />
-                  <p className="mt-1 text-[11px] text-gray-400">{ct("messages.sliding_window_on_edge_empty_env_ai_rl", "Edge 滑动窗口；留空用环境 AI_RL_WINDOW_PER_MIN", "Sliding window on Edge; empty → env AI_RL_WINDOW_PER_MIN")}</p>
-                </div>
-                <div>
-                  <label className="block text-sm text-gray-700 mb-1">{ct("messages.global_ai_concurrent_limit", "全站并发上限（in-flight）", "Global AI concurrent limit (in-flight)")}</label>
-                  <input
-                    type="number"
-                    min={5}
-                    max={100}
-                    value={workingConfig.cloudAIConfig?.clientMaxConcurrent ?? ""}
-                    placeholder="100"
-                    onChange={(e) => {
-                      const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                      const p = newConfig.cloudAIConfig || {};
-                      const raw = e.target.value;
-                      const v = raw === "" ? undefined : Math.min(100, Math.max(5, parseInt(raw, 10) || 0));
-                      newConfig.cloudAIConfig = {
-                        enabled: p.enabled ?? false,
-                        providerName: p.providerName ?? "",
-                        edgeFunctionName: p.edgeFunctionName ?? "ai-vision-proxy",
-                        modelId: p.modelId ?? "",
-                        systemPrompt: p.systemPrompt ?? "",
-                        maxTokens: p.maxTokens ?? 512,
-                        clientDailyLimit: p.clientDailyLimit,
-                        clientCooldownSeconds: p.clientCooldownSeconds,
-                        clientMaxImageSize: p.clientMaxImageSize,
-                        clientImageQuality: p.clientImageQuality,
-                        clientWindowPerMin: p.clientWindowPerMin,
-                        clientMaxConcurrent: v,
-                        clientChatMinIntervalSeconds: p.clientChatMinIntervalSeconds,
-                        supabaseUrl: p.supabaseUrl ?? "",
-                        supabaseAnonKey: p.supabaseAnonKey ?? "",
-                        allowUnauthenticatedUse: p.allowUnauthenticatedUse ?? false,
-                      };
-                      if (raw === "" || newConfig.cloudAIConfig.clientMaxConcurrent === undefined) {
-                        delete newConfig.cloudAIConfig.clientMaxConcurrent;
-                      }
-                      setWorkingConfig(newConfig);
-                      setHasChanges(true);
-                    }}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
-                  />
-                  <p className="mt-1 text-[11px] text-gray-400">{ct("messages.edge_clamps_5_100_empty_default_100", "Edge 限制 5–100；留空默认 100。CMS 生效有约 1 分钟缓存，宣讲前请提前改或改 Secret。", "Edge clamps 5–100; empty → 100. CMS changes may lag ~1 min; set Secret before peak events.")}</p>
-                </div>
-                <div>
-                  <label className="block text-sm text-gray-700 mb-1">{ct("messages.min_seconds_between_follow_up_sends", "追问最小间隔（秒）", "Min seconds between follow-up sends")}</label>
-                  <input
-                    type="number"
-                    min={0}
-                    max={3600}
-                    value={workingConfig.cloudAIConfig?.clientChatMinIntervalSeconds ?? ""}
-                    placeholder={ct("messages.same_as_min_interval", "同调用间隔", "Same as min interval")}
-                    onChange={(e) => {
-                      const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                      const p = newConfig.cloudAIConfig || {};
-                      const raw = e.target.value;
-                      const v = raw === "" ? undefined : Math.min(3600, Math.max(0, parseInt(raw, 10) || 0));
-                      newConfig.cloudAIConfig = {
-                        enabled: p.enabled ?? false,
-                        providerName: p.providerName ?? "",
-                        edgeFunctionName: p.edgeFunctionName ?? "ai-vision-proxy",
-                        modelId: p.modelId ?? "",
-                        systemPrompt: p.systemPrompt ?? "",
-                        maxTokens: p.maxTokens ?? 512,
-                        clientDailyLimit: p.clientDailyLimit,
-                        clientCooldownSeconds: p.clientCooldownSeconds,
-                        clientMaxImageSize: p.clientMaxImageSize,
-                        clientImageQuality: p.clientImageQuality,
-                        clientWindowPerMin: p.clientWindowPerMin,
-                        clientChatMinIntervalSeconds: v,
-                        supabaseUrl: p.supabaseUrl ?? "",
-                        supabaseAnonKey: p.supabaseAnonKey ?? "",
-                        allowUnauthenticatedUse: p.allowUnauthenticatedUse ?? false,
-                      };
-                      if (raw === "" || newConfig.cloudAIConfig.clientChatMinIntervalSeconds === undefined) {
-                        delete newConfig.cloudAIConfig.clientChatMinIntervalSeconds;
-                      }
-                      setWorkingConfig(newConfig);
-                      setHasChanges(true);
-                    }}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
-                  />
-                  <p className="mt-1 text-[11px] text-gray-400">{ct("messages.client_follow_up_spacing_only_empty_same_as", "仅前端追问连发；留空与「调用间隔」相同", "Client follow-up spacing only; empty → same as min interval")}</p>
-                </div>
-              </div>
-
-              {/* Status indicator */}
-              <div className="pt-3 border-t border-gray-100">
-                <div className="flex items-center gap-2">
-                  <div className={`w-2 h-2 rounded-full ${
-                    workingConfig.cloudAIConfig?.enabled
-                      ? "bg-violet-500"
-                      : "bg-gray-300"
-                  }`} />
-                  <span className="text-xs text-gray-600">
-                    {workingConfig.cloudAIConfig?.enabled
-                      ? ct(
-                          `已启用 — ${workingConfig.cloudAIConfig?.providerName || "Cloud AI"} (${workingConfig.cloudAIConfig?.modelId || "未设置"})`,
-                          `Enabled — ${workingConfig.cloudAIConfig?.providerName || "Cloud AI"} (${workingConfig.cloudAIConfig?.modelId || "not set"})`
-                        )
-                      : ct("messages.disabled_no_cloud_requests_no_mock_demo", "未启用（不请求云端，无 Mock 演示）", "Disabled (no cloud requests, no mock demo)")
-                    }
-                  </span>
-                </div>
-              </div>
-
-              {/* Architecture + Security */}
-              <div className="bg-violet-50 border border-violet-200 rounded-lg p-3 mt-3">
-                <p className="text-xs text-violet-800 mb-2">{ct("messages.backend_proxy_architecture", "后端代理架构：", "Backend Proxy Architecture:")}</p>
-                <div className="font-mono text-[10px] text-violet-600 space-y-1 bg-white rounded-lg p-3 border border-violet-100">
-                  <p>{ct("messages.user_clicks_deep_analysis", "用户点击\"深度分析\"", "User clicks 'Deep Analysis'")}</p>
-                  <p className="text-violet-400">{"  ↓ image + detection results"}</p>
-                  <p>CloudAIService (fetch)</p>
-                  <p className="text-violet-400">{"  ↓ POST /functions/v1/ai-vision-proxy"}</p>
-                  <p className="text-violet-700">{ct("messages.supabase_edge_function", "Supabase Edge Function", "Supabase Edge Function")}</p>
-                  <p className="text-violet-400">{"  ↓ QWEN_API_KEY / GEMINI_API_KEY / OPENAI_API_KEY"}</p>
-                  <p className="text-blue-600">{ct("messages.cloud_llm_api", "云端大模型 API", "Cloud LLM API")}</p>
-                </div>
-              </div>
-
-              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mt-3">
-                <p className="text-xs text-amber-800 mb-2">{ct("messages.security_reminder", "安全提醒：", "Security Reminder:")}</p>
-                <ul className="text-[11px] text-amber-700 space-y-1 list-disc list-inside">
-                  <li>{ct("messages.all_cloud_ai_api_keys_qwen_api_key", "所有云AI的API密钥（如QWEN_API_KEY、GEMINI_API_KEY）必须作为Supabase Edge Function的Secrets配置", "All cloud AI API keys (QWEN_API_KEY, GEMINI_API_KEY, etc.) must be Supabase Edge Function Secrets")}</li>
-                  <li>{ct("messages.this_config_only_stores_display_name_and_model", "此处只配置显示名称和模型标识，不涉及任何密钥", "This config only stores display name and model ID — no secrets involved")}</li>
-                  <li>{ct("messages.enter_supabase_url_anon_key_above_for_cloud", "在上方填写云端识图专用 Supabase URL/Anon Key，或在 IM 后端代理页填写并留空此处（会回退使用，无需开启 IM）", "Enter Supabase URL/anon key above for cloud AI, or only under Backend Proxy and leave these empty (fallback; IM toggle not required)")}</li>
-                </ul>
-              </div>
-
-              {/* Edge Function Template */}
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mt-3">
-                <p className="text-xs text-blue-800 mb-2">{ct("messages.edge_function_deployment_reference", "Edge Function 部署参考：", "Edge Function Deployment Reference:")}</p>
-                <ol className="text-[11px] text-blue-700 space-y-1 list-decimal list-inside">
-                  <li>{ct("messages.create_supabase_functions_ai_vision_proxy_index_ts", "创建 supabase/functions/ai-vision-proxy/index.ts", "Create supabase/functions/ai-vision-proxy/index.ts")}</li>
-                  <li>{ct("messages.read_secrets_via_deno_env_get_qwen_api", "在 Edge Function 中读取 Deno.env.get('QWEN_API_KEY') 等密钥", "Read secrets via Deno.env.get('QWEN_API_KEY') in the Edge Function")}</li>
-                  <li>{ct("messages.receive_from_frontend", "接收前端传来的 { image, detections, modelId, systemPrompt, maxTokens }", "Receive { image, detections, modelId, systemPrompt, maxTokens } from frontend")}</li>
-                  <li>{ct("messages.route_to_the_correct_cloud_api_based_on", "根据 modelId 路由到对应的云AI API（千问/Gemini/OpenAI）", "Route to the correct cloud API based on modelId (Qwen/Gemini/OpenAI)")}</li>
-                  <li>{ct("messages.return", "返回 { analysis: '...markdown text...', confidence: 0.92, suggestions: [...] }", "Return { analysis: '...markdown text...', confidence: 0.92, suggestions: [...] }")}</li>
-                </ol>
-              </div>
-            </div>
-          </div>
+          <React.Suspense fallback={cmsTabFallback}>
+            <AiModelTab workingConfig={workingConfig} patchSection={patchSection} ct={ct} />
+          </React.Suspense>
         ) : activeTab === "backendProxy" ? (
           <div className="space-y-4">
             <div className="bg-white rounded-xl border border-gray-200 p-4 space-y-4">
@@ -4012,13 +2220,13 @@ export default function ConfigManagerPage() {
                 <span className="text-sm text-gray-700">{ct("messages.enable_supabase_realtime", "启用 Supabase Realtime", "Enable Supabase Realtime")}</span>
                 <button
                   onClick={() => {
-                    const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                    if (!newConfig.backendProxyConfig) newConfig.backendProxyConfig = emptyBackendProxyShell();
-                    newConfig.backendProxyConfig.enabled = !newConfig.backendProxyConfig.enabled;
-                    newConfig.backendProxyConfig.chatProvider = "supabase";
-                    newConfig.backendProxyConfig.imMode = "im-provider-direct";
-                    setWorkingConfig(newConfig);
-                    setHasChanges(true);
+                    const bp = workingConfig.backendProxyConfig ?? emptyBackendProxyShell();
+                    patchSection("backendProxyConfig", {
+                      ...(workingConfig.backendProxyConfig ? {} : bp),
+                      enabled: !bp.enabled,
+                      chatProvider: "supabase",
+                      imMode: "im-provider-direct",
+                    });
                   }}
                   className={`relative w-12 h-6 rounded-full transition-colors ${
                     workingConfig.backendProxyConfig?.enabled ? "bg-emerald-500" : "bg-gray-300"
@@ -4126,621 +2334,13 @@ export default function ConfigManagerPage() {
             </div>
           </div>
         ) : activeTab === "loginConfig" ? (
-          <div className="space-y-4">
-            <div className="bg-white rounded-xl border border-gray-200 p-4 space-y-4">
-              <h3 className="text-base text-gray-800 mb-2">{ct("messages.login_page_config", "登录页面配置", "Login Page Config")}</h3>
-              <p className="text-xs text-gray-500 -mt-2">{ct("messages.this_screen_only_toggles_which_buttons_appear_on", "此处仅控制登录页是否显示各入口。实际 OAuth / 短信等密钥请在 Supabase 项目控制台（Authentication → Providers 等）配置，无需在此填写。", "This screen only toggles which buttons appear on the login page. Configure OAuth keys and SMS in your Supabase project (Authentication → Providers, etc.) — nothing to fill in here.")}</p>
-
-              {/* Social providers — visibility toggles only */}
-              <div className="space-y-2">
-                <h4 className="text-sm text-gray-700 font-medium flex items-center gap-2">
-                  <Shield className="w-4 h-4 text-emerald-600" />
-                  {ct("messages.social_login_show_hide", "社交登录（显示开关）", "Social login (show/hide)")}
-                </h4>
-                {([
-                  { key: 'wechat' as const, label: ct("messages.wechat", "微信 WeChat", "WeChat"), color: "bg-[#07C160]", badge: 'WX' as const },
-                  { key: 'google' as const, label: "Google", color: "bg-[#4285F4]", badge: 'G' as const },
-                  { key: 'facebook' as const, label: "Facebook", color: "bg-[#1877F2]", badge: 'f' as const },
-                  { key: 'apple' as const, label: "Apple", color: "bg-black", badge: 'A' as const },
-                  { key: 'alipay' as const, label: ct("messages.alipay", "支付宝 Alipay", "Alipay"), color: "bg-[#1678FF]", badge: 'AP' as const },
-                  { key: 'line' as const, label: ct("messages.line", "LINE", "LINE"), color: "bg-[#06C755]", badge: 'L' as const },
-                  { key: 'twitter' as const, label: "X (Twitter)", color: "bg-black", badge: 'X' as const },
-                ]).map((provider) => {
-                  const isEnabled = workingConfig.loginConfig?.socialProviders?.[provider.key] !== false;
-
-                  return (
-                    <div key={provider.key} className={`border rounded-xl overflow-hidden transition-colors ${isEnabled ? 'border-gray-200' : 'border-gray-100 opacity-60'}`}>
-                      <div className="flex items-center justify-between px-4 py-3 bg-gray-50/50">
-                        <div className="flex items-center gap-3 flex-1 min-w-0">
-                          <div className={`w-7 h-7 ${provider.color} rounded-lg flex items-center justify-center flex-shrink-0`}>
-                            <span className="text-white text-[10px]">{provider.badge}</span>
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <span className="text-sm text-gray-800">{provider.label}</span>
-                            {isEnabled && (
-                              <span className="ms-2 text-[10px] text-gray-400">
-                                {ct("messages.shown_on_login", "登录页显示", "Shown on login")}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                            if (!newConfig.loginConfig) newConfig.loginConfig = { socialProviders: { wechat: true, google: true, facebook: true, apple: true, alipay: true, line: true, twitter: true }, oauthCredentials: {}, enablePhoneLogin: true, enableEmailLogin: true, defaultLoginMethod: 'phone' };
-                            if (!newConfig.loginConfig.socialProviders) newConfig.loginConfig.socialProviders = { wechat: true, google: true, facebook: true, apple: true, alipay: true, twitter: true };
-                            newConfig.loginConfig.socialProviders[provider.key] = !newConfig.loginConfig.socialProviders[provider.key];
-                            setWorkingConfig(newConfig);
-                            setHasChanges(true);
-                          }}
-                          className={`relative w-12 h-6 rounded-full transition-colors flex-shrink-0 ${
-                            isEnabled ? "bg-emerald-500" : "bg-gray-300"
-                          }`}
-                        >
-                          <div className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
-                            isEnabled ? "translate-x-6" : "translate-x-0.5"
-                          }`} />
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-
-              {/* Regional OAuth Credentials — WeChat / Alipay / LINE (public, not a secret) */}
-              {(['wechat', 'alipay', 'line'] as const).filter(k => workingConfig.loginConfig?.socialProviders?.[k] !== false).map(k => {
-                const isLine = k === 'line';
-                const fieldKey = isLine ? 'channelId' : 'appId';
-                const label = k === 'wechat' ? ct("messages.wechat_app_id", "微信 AppID", "WeChat App ID") :
-                              k === 'line' ? ct("messages.line_channel_id", "LINE Channel ID", "LINE Channel ID") :
-                              ct("messages.alipay_app_id", "支付宝 AppID", "Alipay App ID");
-                const hint = k === 'wechat'
-                  ? ct("messages.wechat_open_platform_app_id_public_used_to", "微信开放平台的 AppID（公开信息，用于构造授权 URL）", "WeChat Open Platform App ID (public, used to build the OAuth URL)")
-                  : k === 'line'
-                    ? ct("messages.line_developers_console_channel_id_public_used_to", "LINE Developers Console 的 Channel ID（公开信息，用于构造授权 URL）", "LINE Developers Console Channel ID (public, used to build the OAuth URL)")
-                    : ct("messages.alipay_open_platform_app_id_public", "支付宝开放平台的 AppID（公开信息）", "Alipay Open Platform App ID (public)");
-                const placeholder = k === 'wechat' ? 'wxXXXXXXXXXXXXXXXX' : k === 'line' ? '1XXXXXXXXX' : '2021XXXXXXXXXXXX';
-
-                return (
-                <div key={`oauth-${k}`} className="pt-3 border-t border-gray-200 space-y-2">
-                  <h4 className="text-sm text-gray-700 font-medium">{label}</h4>
-                  <p className="text-[11px] text-gray-400">{hint}</p>
-                  <input
-                    type="text"
-                    value={(workingConfig.loginConfig?.oauthCredentials?.[k] as any)?.[fieldKey] || ''}
-                    onChange={(e) => {
-                      const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                      if (!newConfig.loginConfig) newConfig.loginConfig = { socialProviders: { wechat: true, google: true, facebook: true, apple: true, alipay: true, line: true, twitter: true }, oauthCredentials: {}, enablePhoneLogin: true, enableEmailLogin: true, defaultLoginMethod: 'phone' };
-                      if (!newConfig.loginConfig.oauthCredentials) newConfig.loginConfig.oauthCredentials = {};
-                      if (!newConfig.loginConfig.oauthCredentials[k]) newConfig.loginConfig.oauthCredentials[k] = isLine ? { channelId: '' } : { appId: '' };
-                      (newConfig.loginConfig.oauthCredentials[k] as any)[fieldKey] = e.target.value;
-                      setWorkingConfig(newConfig);
-                      setHasChanges(true);
-                    }}
-                    placeholder={placeholder}
-                    className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
-                  />
-                </div>
-                );
-              })}
-
-              {/* Account Login Methods */}
-              <div className="space-y-3 pt-3 border-t border-gray-200">
-                <h4 className="text-sm text-gray-700 font-medium">{ct("messages.account_login_methods", "账号登录方式", "Account Login Methods")}</h4>
-
-                {/* Phone Login Toggle */}
-                <div className="flex items-center justify-between py-2">
-                  <div>
-                    <label className="block text-sm text-gray-700">{ct("messages.phone_login", "手机号登录", "Phone Login")}</label>
-                    <p className="text-[11px] text-gray-400">{ct("messages.login_via_phone_number_verification_code", "通过手机号 + 验证码登录", "Login via phone number + verification code")}</p>
-                  </div>
-                  <button
-                    onClick={() => {
-                      const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                      if (!newConfig.loginConfig) newConfig.loginConfig = { socialProviders: { wechat: true, google: true, facebook: true, apple: true, alipay: true, line: true, twitter: true }, oauthCredentials: {}, enablePhoneLogin: true, enableEmailLogin: true, defaultLoginMethod: 'phone' };
-                      newConfig.loginConfig.enablePhoneLogin = !newConfig.loginConfig.enablePhoneLogin;
-                      if (!newConfig.loginConfig.enablePhoneLogin && newConfig.loginConfig.defaultLoginMethod === 'phone') {
-                        newConfig.loginConfig.defaultLoginMethod = 'email';
-                      }
-                      setWorkingConfig(newConfig);
-                      setHasChanges(true);
-                    }}
-                    className={`relative w-12 h-6 rounded-full transition-colors ${
-                      workingConfig.loginConfig?.enablePhoneLogin !== false ? "bg-emerald-500" : "bg-gray-300"
-                    }`}
-                  >
-                    <div className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
-                      workingConfig.loginConfig?.enablePhoneLogin !== false ? "translate-x-6" : "translate-x-0.5"
-                    }`} />
-                  </button>
-                </div>
-
-                {/* Email Login Toggle */}
-                <div className="flex items-center justify-between py-2">
-                  <div>
-                    <label className="block text-sm text-gray-700">{ct("messages.email_login", "邮箱登录", "Email Login")}</label>
-                    <p className="text-[11px] text-gray-400">{ct("messages.login_via_email_verification_code", "通过邮箱 + 验证码登录", "Login via email + verification code")}</p>
-                  </div>
-                  <button
-                    onClick={() => {
-                      const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                      if (!newConfig.loginConfig) newConfig.loginConfig = { socialProviders: { wechat: true, google: true, facebook: true, apple: true, alipay: true, line: true, twitter: true }, oauthCredentials: {}, enablePhoneLogin: true, enableEmailLogin: true, defaultLoginMethod: 'phone' };
-                      newConfig.loginConfig.enableEmailLogin = !newConfig.loginConfig.enableEmailLogin;
-                      if (!newConfig.loginConfig.enableEmailLogin && newConfig.loginConfig.defaultLoginMethod === 'email') {
-                        newConfig.loginConfig.defaultLoginMethod = 'phone';
-                      }
-                      setWorkingConfig(newConfig);
-                      setHasChanges(true);
-                    }}
-                    className={`relative w-12 h-6 rounded-full transition-colors ${
-                      workingConfig.loginConfig?.enableEmailLogin !== false ? "bg-emerald-500" : "bg-gray-300"
-                    }`}
-                  >
-                    <div className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
-                      workingConfig.loginConfig?.enableEmailLogin !== false ? "translate-x-6" : "translate-x-0.5"
-                    }`} />
-                  </button>
-                </div>
-
-                {/* Default Login Method */}
-                <div className="pt-2">
-                  <label className="block text-sm text-gray-700 mb-1">{ct("messages.default_login_method", "默认登录方式", "Default Login Method")}</label>
-                  <div className="flex gap-2">
-                    {[
-                      { key: 'phone' as const, label: ct("messages.phone", "手机号", "Phone") },
-                      { key: 'email' as const, label: ct("messages.email", "邮箱", "Email") }
-                    ].map(method => (
-                      <button
-                        key={method.key}
-                        onClick={() => {
-                          const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                          if (!newConfig.loginConfig) newConfig.loginConfig = { socialProviders: { wechat: true, google: true, facebook: true, apple: true, alipay: true, line: true, twitter: true }, oauthCredentials: {}, enablePhoneLogin: true, enableEmailLogin: true, defaultLoginMethod: 'phone' };
-                          newConfig.loginConfig.defaultLoginMethod = method.key;
-                          setWorkingConfig(newConfig);
-                          setHasChanges(true);
-                        }}
-                        className={`px-4 py-2 rounded-lg text-sm transition-colors ${
-                          (workingConfig.loginConfig?.defaultLoginMethod || 'phone') === method.key
-                            ? "bg-emerald-600 text-white"
-                            : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-                        }`}
-                      >
-                        {method.label}
-                      </button>
-                    ))}
-                  </div>
-                  <p className="mt-1 text-[11px] text-gray-400">{ct("messages.the_login_method_selected_by_default_when_the", "用户打开登录页时默认选中的登录方式", "The login method selected by default when the user opens the login page")}</p>
-                </div>
-              </div>
-
-              {/* Preview Info */}
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mt-3">
-                <p className="text-xs text-blue-800 mb-2">{ct("messages.current_preview", "当前预览：", "Current Preview:")}</p>
-                <div className="text-[11px] text-blue-700 space-y-1">
-                  <p>{ct("messages.social_login_shown", "社交登录（将显示）：", "Social login (shown): ")}
-                    {(['wechat', 'google', 'facebook', 'apple', 'alipay', 'line', 'twitter'] as const)
-                      .filter(k => workingConfig.loginConfig?.socialProviders?.[k] !== false)
-                      .map(k => ({ wechat: 'WeChat', google: 'Google', facebook: 'Facebook', apple: 'Apple', alipay: 'Alipay', line: 'LINE', twitter: 'X' }[k]))
-                      .join(', ') || ct("messages.none", "无", "None")}
-                  </p>
-                  <p>{ct("messages.account_login", "账号登录：", "Account Login: ")}
-                    {[
-                      workingConfig.loginConfig?.enablePhoneLogin !== false ? ct("messages.phone", "手机号", "Phone") : null,
-                      workingConfig.loginConfig?.enableEmailLogin !== false ? ct("messages.email", "邮箱", "Email") : null
-                    ].filter(Boolean).join(', ') || ct("messages.none", "无", "None")}
-                  </p>
-                  <p className="text-[10px] text-blue-500 mt-1">{ct("messages.whether_login_works_depends_on_providers_being_enabled", "实际能否登录取决于 Supabase 控制台是否已启用对应 Provider。", "Whether login works depends on providers being enabled in the Supabase Dashboard.")}</p>
-                </div>
-              </div>
-
-              {/* Security & Deployment Note */}
-              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mt-3">
-                <p className="text-xs text-amber-800 mb-2 flex items-center gap-1">
-                  <Shield className="w-3.5 h-3.5" />
-                  {ct("messages.security_deployment_reminder", "安全与部署提醒：", "Security & Deployment Reminder:")}
-                </p>
-                <ul className="text-[11px] text-amber-700 space-y-1 list-disc list-inside">
-                  <li>{ct("messages.for_google_facebook_apple_x_set_client_id", "Google / Facebook / Apple / X 等：在 Supabase → Authentication → Providers 中填写 Client ID 与 Secret；前端仅通过 Supabase 发起登录，不在此配置页保存密钥。", "For Google / Facebook / Apple / X: set Client ID and Secret in Supabase → Authentication → Providers. The app signs in via Supabase only; no secrets are stored in this config page.")}</li>
-                  <li>{ct("messages.wechat_alipay_line_configure_wechat_alipay_line_channel", "微信 / 支付宝 / LINE：在 Supabase Edge Function Secrets（如 WECHAT_*、ALIPAY_*、LINE_CHANNEL_*）中配置；本页只控制是否显示按钮。", "WeChat / Alipay / LINE: configure WECHAT_* / ALIPAY_* / LINE_CHANNEL_* in Edge Function secrets; this page only toggles button visibility.")}</li>
-                  <li>{ct("messages.enable_only_login_methods_common_in_your_target", "建议只启用目标市场常用的登录方式（如国内市场：微信+手机号；海外市场：Google+Apple+邮箱）", "Enable only login methods common in your target market (e.g. China: WeChat + phone; international: Google + Apple + email)")}</li>
-                </ul>
-              </div>
-            </div>
-          </div>
+          <React.Suspense fallback={cmsTabFallback}>
+            <LoginConfigTab workingConfig={workingConfig} patchSection={patchSection} ct={ct} />
+          </React.Suspense>
         ) : activeTab === "pushProviders" ? (
-          <div className="space-y-4">
-            <div className="bg-white rounded-xl border border-gray-200 p-4 space-y-4">
-              <h3 className="text-base text-gray-800 mb-2">{ct("messages.push_notification_provider_config", "推送服务商配置", "Push Notification Provider Config")}</h3>
-              <p className="text-xs text-gray-500 -mt-2">{ct("messages.select_and_configure_push_notification_providers_public_keys", "选择并配置推送通知服务商。公钥/App ID 放在前端安全使用，私钥/Master Secret 必须存放在后端（Edge Function Secrets）。同一时间只激活一个服务商。", "Select and configure push notification providers. Public keys/App IDs are safe for frontend. Private keys/Master Secrets must be stored server-side (Edge Function Secrets). Only one provider is active at a time.")}</p>
-
-              {/* Provider Cards */}
-              <div className="space-y-3">
-                {([
-                  {
-                    key: 'webpush' as const,
-                    name: 'Web Push (VAPID)',
-                    icon: '🌐',
-                    color: 'border-blue-400 bg-blue-50',
-                    activeColor: 'ring-blue-400',
-                    desc: ct("messages.w3c_standard_no_third_party_sdk_native_browser", "W3C标准，无需第三方SDK，浏览器原生支持", "W3C standard, no third-party SDK, native browser support"),
-                    region: ct("messages.global", "全球", "Global"),
-                  },
-                  {
-                    key: 'fcm' as const,
-                    name: 'Firebase Cloud Messaging',
-                    icon: '🔥',
-                    color: 'border-orange-400 bg-orange-50',
-                    activeColor: 'ring-orange-400',
-                    desc: ct("messages.google_push_service_free_unlimited_supports_web_ios", "Google推送服务，免费无限量，支持Web/iOS/Android", "Google push service, free unlimited, supports Web/iOS/Android"),
-                    region: ct("messages.global_not_available_in_mainland_china", "全球（中国大陆不可用）", "Global (not available in mainland China)"),
-                  },
-                  {
-                    key: 'onesignal' as const,
-                    name: 'OneSignal',
-                    icon: '📡',
-                    color: 'border-purple-400 bg-purple-50',
-                    activeColor: 'ring-purple-400',
-                    desc: ct("messages.professional_push_platform_generous_free_tier_auto_segmentation", "专业推送平台，免费额度大，自动分段推送", "Professional push platform, generous free tier, auto-segmentation"),
-                    region: ct("messages.global", "全球", "Global"),
-                  },
-                  {
-                    key: 'jpush' as const,
-                    name: ct("messages.jpush", "极光推送 JPush", "JPush"),
-                    icon: '⚡',
-                    color: 'border-yellow-400 bg-yellow-50',
-                    activeColor: 'ring-yellow-400',
-                    desc: ct("messages.china_mainstream_push_supports_vendor_channels_huawei_xiaomi", "国内主流推送，支持厂商通道（华为/小米/OPPO/vivo），送达率高", "China mainstream push, supports vendor channels (Huawei/Xiaomi/OPPO/vivo), high delivery rate"),
-                    region: ct("messages.china_1", "中国", "China"),
-                  },
-                  {
-                    key: 'getui' as const,
-                    name: ct("messages.getui_unipush", "个推 GeTui / UniPush", "GeTui / UniPush"),
-                    icon: '📱',
-                    color: 'border-green-400 bg-green-50',
-                    activeColor: 'ring-green-400',
-                    desc: ct("messages.china_top3_push_provider_billions_of_daily_pushes", "国内TOP3推送服务商，日均推送百亿级，支持统一推送联盟", "China TOP3 push provider, billions of daily pushes, supports Unified Push Alliance"),
-                    region: ct("messages.china_1", "中国", "China"),
-                  },
-                ] as const).map((provider) => {
-                  const pc = workingConfig.pushProvidersConfig || {};
-                  const isActive = (pc.activeProvider || 'webpush') === provider.key;
-                  const providerConfig = pc[provider.key] || {};
-                  const isEnabled = providerConfig.enabled === true;
-
-                  return (
-                    <div key={provider.key} className={`border-2 rounded-xl overflow-hidden transition-all ${
-                      isActive ? `${provider.color} ${provider.activeColor} ring-2` : 'border-gray-200 bg-white'
-                    }`}>
-                      {/* Header */}
-                      <div className="flex items-center justify-between px-4 py-3">
-                        <div className="flex items-center gap-3 flex-1 min-w-0">
-                          <span className="text-xl">{provider.icon}</span>
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <span className="text-sm text-gray-800">{provider.name}</span>
-                              <span className="text-[10px] bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded">{provider.region}</span>
-                              {isActive && (
-                                <span className="text-[10px] bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full">{ct("messages.active", "已激活", "Active")}</span>
-                              )}
-                            </div>
-                            <p className="text-[11px] text-gray-500 mt-0.5">{provider.desc}</p>
-                          </div>
-                        </div>
-                        <button
-                          onClick={() => {
-                            const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                            if (!newConfig.pushProvidersConfig) newConfig.pushProvidersConfig = {};
-                            newConfig.pushProvidersConfig.activeProvider = provider.key;
-                            if (!newConfig.pushProvidersConfig[provider.key]) newConfig.pushProvidersConfig[provider.key] = {};
-                            newConfig.pushProvidersConfig[provider.key].enabled = true;
-                            setWorkingConfig(newConfig);
-                            setHasChanges(true);
-                          }}
-                          className={`px-3 py-1.5 rounded-lg text-xs transition-colors flex-shrink-0 ${
-                            isActive
-                              ? "bg-emerald-600 text-white"
-                              : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-                          }`}
-                        >
-                          {isActive ? ct("messages.in_use", "当前使用", "In Use") : ct("messages.activate", "激活", "Activate")}
-                        </button>
-                      </div>
-
-                      {/* Config Fields — only show when active */}
-                      {isActive && (
-                        <div className="px-4 py-3 bg-white/80 border-t border-gray-100 space-y-3">
-                          {/* Web Push */}
-                          {provider.key === 'webpush' && (
-                            <>
-                              <div>
-                                <label className="block text-xs text-gray-600 mb-1">VAPID Public Key</label>
-                                <input
-                                  type="text"
-                                  value={pc.webpush?.vapidPublicKey || ""}
-                                  onChange={(e) => {
-                                    const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                                    if (!newConfig.pushProvidersConfig) newConfig.pushProvidersConfig = {};
-                                    if (!newConfig.pushProvidersConfig.webpush) newConfig.pushProvidersConfig.webpush = { enabled: true };
-                                    newConfig.pushProvidersConfig.webpush.vapidPublicKey = e.target.value;
-                                    setWorkingConfig(newConfig);
-                                    setHasChanges(true);
-                                  }}
-                                  placeholder="BEl62iUYgUivxIk..."
-                                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 font-mono text-xs"
-                                />
-                                <p className="mt-1 text-[11px] text-gray-400">{ct("messages.generate_with_web_push_generate_vapid_keys_put", "用 web-push generate-vapid-keys 生成，公钥放这里", "Generate with web-push generate-vapid-keys, put public key here")}</p>
-                              </div>
-                              <div>
-                                <label className="block text-xs text-gray-600 mb-1">{ct("messages.push_api_base_url", "推送后端API地址", "Push API Base URL")}</label>
-                                <input
-                                  type="text"
-                                  value={pc.webpush?.pushApiBase || ""}
-                                  onChange={(e) => {
-                                    const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                                    if (!newConfig.pushProvidersConfig) newConfig.pushProvidersConfig = {};
-                                    if (!newConfig.pushProvidersConfig.webpush) newConfig.pushProvidersConfig.webpush = { enabled: true };
-                                    newConfig.pushProvidersConfig.webpush.pushApiBase = e.target.value;
-                                    setWorkingConfig(newConfig);
-                                    setHasChanges(true);
-                                  }}
-                                  placeholder="https://api.example.com"
-                                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 font-mono text-xs"
-                                />
-                              </div>
-                            </>
-                          )}
-
-                          {/* FCM */}
-                          {provider.key === 'fcm' && (
-                            <>
-                              {[
-                                { field: 'apiKey', label: 'Firebase Web API Key', placeholder: 'AIzaSy...', hint: ct("messages.firebase_console_project_settings_web_api_key_public", "Firebase Console → 项目设置 → Web API Key（公开）", "Firebase Console → Project Settings → Web API Key (public)") },
-                                { field: 'projectId', label: 'Firebase Project ID', placeholder: 'my-project-123', hint: '' },
-                                { field: 'appId', label: 'Firebase App ID', placeholder: '1:123456789:web:abcdef', hint: '' },
-                                { field: 'messagingSenderId', label: 'FCM Sender ID', placeholder: '123456789', hint: ct("messages.firebase_console_cloud_messaging_sender_id", "Firebase Console → 云消息传递 → 发件人ID", "Firebase Console → Cloud Messaging → Sender ID") },
-                                { field: 'vapidKey', label: 'FCM Web Push VAPID Key', placeholder: 'BEl62iUY...', hint: ct("messages.firebase_console_cloud_messaging_web_push_certificate_key", "Firebase Console → 云消息传递 → Web Push 证书 → 密钥对", "Firebase Console → Cloud Messaging → Web Push certificate → Key Pair") },
-                              ].map(({ field, label, placeholder, hint }) => (
-                                <div key={field}>
-                                  <label className="block text-xs text-gray-600 mb-1">{label}</label>
-                                  <input
-                                    type="text"
-                                    value={(pc.fcm as any)?.[field] || ""}
-                                    onChange={(e) => {
-                                      const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                                      if (!newConfig.pushProvidersConfig) newConfig.pushProvidersConfig = {};
-                                      if (!newConfig.pushProvidersConfig.fcm) newConfig.pushProvidersConfig.fcm = { enabled: true };
-                                      newConfig.pushProvidersConfig.fcm[field] = e.target.value;
-                                      setWorkingConfig(newConfig);
-                                      setHasChanges(true);
-                                    }}
-                                    placeholder={placeholder}
-                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 font-mono text-xs"
-                                  />
-                                  {hint && <p className="mt-1 text-[11px] text-gray-400">{hint}</p>}
-                                </div>
-                              ))}
-                              <div className="bg-amber-50 rounded-lg p-2">
-                                <p className="text-[11px] text-amber-700">{ct("messages.fcm_server_key_must_be_stored_server_side", "FCM Server Key 必须存放在后端（Supabase Edge Function Secrets），不要放在前端", "FCM Server Key must be stored server-side (Supabase Edge Function Secrets), never in frontend")}</p>
-                              </div>
-                            </>
-                          )}
-
-                          {/* OneSignal */}
-                          {provider.key === 'onesignal' && (
-                            <>
-                              <div>
-                                <label className="block text-xs text-gray-600 mb-1">OneSignal App ID</label>
-                                <input
-                                  type="text"
-                                  value={pc.onesignal?.appId || ""}
-                                  onChange={(e) => {
-                                    const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                                    if (!newConfig.pushProvidersConfig) newConfig.pushProvidersConfig = {};
-                                    if (!newConfig.pushProvidersConfig.onesignal) newConfig.pushProvidersConfig.onesignal = { enabled: true };
-                                    newConfig.pushProvidersConfig.onesignal.appId = e.target.value;
-                                    setWorkingConfig(newConfig);
-                                    setHasChanges(true);
-                                  }}
-                                  placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-                                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 font-mono text-xs"
-                                />
-                                <p className="mt-1 text-[11px] text-gray-400">{ct("messages.onesignal_dashboard_settings_keys_ids_onesignal_app_id", "OneSignal Dashboard → Settings → Keys & IDs → OneSignal App ID（公开）", "OneSignal Dashboard → Settings → Keys & IDs → OneSignal App ID (public)")}</p>
-                              </div>
-                              <div>
-                                <label className="block text-xs text-gray-600 mb-1">Safari Web Push ID {ct("messages.optional", "（可选）", "(optional)")}</label>
-                                <input
-                                  type="text"
-                                  value={pc.onesignal?.safariWebId || ""}
-                                  onChange={(e) => {
-                                    const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                                    if (!newConfig.pushProvidersConfig) newConfig.pushProvidersConfig = {};
-                                    if (!newConfig.pushProvidersConfig.onesignal) newConfig.pushProvidersConfig.onesignal = { enabled: true };
-                                    newConfig.pushProvidersConfig.onesignal.safariWebId = e.target.value;
-                                    setWorkingConfig(newConfig);
-                                    setHasChanges(true);
-                                  }}
-                                  placeholder="web.onesignal.auto.xxxxxx"
-                                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 font-mono text-xs"
-                                />
-                              </div>
-                              <div className="bg-amber-50 rounded-lg p-2">
-                                <p className="text-[11px] text-amber-700">{ct("messages.onesignal_rest_api_key_must_be_stored_server", "OneSignal REST API Key 必须存放在后端（Edge Function Secrets），前端只放 App ID", "OneSignal REST API Key must be stored server-side (Edge Function Secrets). Only App ID goes in frontend.")}</p>
-                              </div>
-                            </>
-                          )}
-
-                          {/* JPush 极光推送 */}
-                          {provider.key === 'jpush' && (
-                            <>
-                              <div>
-                                <label className="block text-xs text-gray-600 mb-1">App Key {ct("messages.public", "（公开）", "(public)")}</label>
-                                <input
-                                  type="text"
-                                  value={pc.jpush?.appKey || ""}
-                                  onChange={(e) => {
-                                    const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                                    if (!newConfig.pushProvidersConfig) newConfig.pushProvidersConfig = {};
-                                    if (!newConfig.pushProvidersConfig.jpush) newConfig.pushProvidersConfig.jpush = { enabled: true };
-                                    newConfig.pushProvidersConfig.jpush.appKey = e.target.value;
-                                    setWorkingConfig(newConfig);
-                                    setHasChanges(true);
-                                  }}
-                                  placeholder="your-jpush-app-key"
-                                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 font-mono text-xs"
-                                />
-                                <p className="mt-1 text-[11px] text-gray-400">{ct("messages.jpush_console_app_settings_app_key", "极光控制台 → 应用设置 → App Key", "JPush Console → App Settings → App Key")}</p>
-                              </div>
-                              <div>
-                                <label className="block text-xs text-gray-600 mb-1">{ct("messages.channel", "渠道标识", "Channel")}</label>
-                                <input
-                                  type="text"
-                                  value={pc.jpush?.channel || ""}
-                                  onChange={(e) => {
-                                    const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                                    if (!newConfig.pushProvidersConfig) newConfig.pushProvidersConfig = {};
-                                    if (!newConfig.pushProvidersConfig.jpush) newConfig.pushProvidersConfig.jpush = { enabled: true };
-                                    newConfig.pushProvidersConfig.jpush.channel = e.target.value;
-                                    setWorkingConfig(newConfig);
-                                    setHasChanges(true);
-                                  }}
-                                  placeholder="default"
-                                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-xs"
-                                />
-                              </div>
-                              <div>
-                                <label className="block text-xs text-gray-600 mb-1">{ct("messages.push_api_proxy_url", "推送API代理地址", "Push API Proxy URL")}</label>
-                                <input
-                                  type="text"
-                                  value={pc.jpush?.pushApiBase || ""}
-                                  onChange={(e) => {
-                                    const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                                    if (!newConfig.pushProvidersConfig) newConfig.pushProvidersConfig = {};
-                                    if (!newConfig.pushProvidersConfig.jpush) newConfig.pushProvidersConfig.jpush = { enabled: true };
-                                    newConfig.pushProvidersConfig.jpush.pushApiBase = e.target.value;
-                                    setWorkingConfig(newConfig);
-                                    setHasChanges(true);
-                                  }}
-                                  placeholder="https://your-supabase.co/functions/v1/jpush-proxy"
-                                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 font-mono text-xs"
-                                />
-                                <p className="mt-1 text-[11px] text-gray-400">{ct("messages.proxy_jpush_rest_api_via_supabase_edge_function", "通过Supabase Edge Function代理极光REST API", "Proxy JPush REST API via Supabase Edge Function")}</p>
-                              </div>
-                              <div className="bg-amber-50 rounded-lg p-2">
-                                <p className="text-[11px] text-amber-700">{ct("messages.master_secret_must_be_stored_in_edge_function", "Master Secret 必须存放在后端 Edge Function Secrets 中（环境变量 JPUSH_MASTER_SECRET）", "Master Secret must be stored in Edge Function Secrets (env var JPUSH_MASTER_SECRET)")}</p>
-                              </div>
-                            </>
-                          )}
-
-                          {/* GeTui 个推 */}
-                          {provider.key === 'getui' && (
-                            <>
-                              <div>
-                                <label className="block text-xs text-gray-600 mb-1">App ID {ct("messages.public", "（公开）", "(public)")}</label>
-                                <input
-                                  type="text"
-                                  value={pc.getui?.appId || ""}
-                                  onChange={(e) => {
-                                    const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                                    if (!newConfig.pushProvidersConfig) newConfig.pushProvidersConfig = {};
-                                    if (!newConfig.pushProvidersConfig.getui) newConfig.pushProvidersConfig.getui = { enabled: true };
-                                    newConfig.pushProvidersConfig.getui.appId = e.target.value;
-                                    setWorkingConfig(newConfig);
-                                    setHasChanges(true);
-                                  }}
-                                  placeholder="your-getui-app-id"
-                                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 font-mono text-xs"
-                                />
-                                <p className="mt-1 text-[11px] text-gray-400">{ct("messages.getui_developer_center_app_config_app_id", "个推开发者中心 → 应用配置 → App ID", "GeTui Developer Center → App Config → App ID")}</p>
-                              </div>
-                              <div>
-                                <label className="block text-xs text-gray-600 mb-1">App Key {ct("messages.public", "（公开）", "(public)")}</label>
-                                <input
-                                  type="text"
-                                  value={pc.getui?.appKey || ""}
-                                  onChange={(e) => {
-                                    const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                                    if (!newConfig.pushProvidersConfig) newConfig.pushProvidersConfig = {};
-                                    if (!newConfig.pushProvidersConfig.getui) newConfig.pushProvidersConfig.getui = { enabled: true };
-                                    newConfig.pushProvidersConfig.getui.appKey = e.target.value;
-                                    setWorkingConfig(newConfig);
-                                    setHasChanges(true);
-                                  }}
-                                  placeholder="your-getui-app-key"
-                                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 font-mono text-xs"
-                                />
-                              </div>
-                              <div>
-                                <label className="block text-xs text-gray-600 mb-1">{ct("messages.push_api_proxy_url", "推送API代理地址", "Push API Proxy URL")}</label>
-                                <input
-                                  type="text"
-                                  value={pc.getui?.pushApiBase || ""}
-                                  onChange={(e) => {
-                                    const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                                    if (!newConfig.pushProvidersConfig) newConfig.pushProvidersConfig = {};
-                                    if (!newConfig.pushProvidersConfig.getui) newConfig.pushProvidersConfig.getui = { enabled: true };
-                                    newConfig.pushProvidersConfig.getui.pushApiBase = e.target.value;
-                                    setWorkingConfig(newConfig);
-                                    setHasChanges(true);
-                                  }}
-                                  placeholder="https://your-supabase.co/functions/v1/getui-proxy"
-                                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 font-mono text-xs"
-                                />
-                                <p className="mt-1 text-[11px] text-gray-400">{ct("messages.proxy_getui_rest_api_via_supabase_edge_function", "通过Supabase Edge Function代理个推REST API", "Proxy GeTui REST API via Supabase Edge Function")}</p>
-                              </div>
-                              <div className="bg-amber-50 rounded-lg p-2">
-                                <p className="text-[11px] text-amber-700">{ct("messages.master_secret_must_be_stored_in_edge_function_1", "Master Secret 必须存放在后端 Edge Function Secrets 中（环境变量 GETUI_MASTER_SECRET）", "Master Secret must be stored in Edge Function Secrets (env var GETUI_MASTER_SECRET)")}</p>
-                              </div>
-                            </>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-
-              {/* Architecture Diagram */}
-              <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 mt-3">
-                <p className="text-xs text-gray-700 mb-2">{ct("messages.push_architecture", "推送架构：", "Push Architecture:")}</p>
-                <div className="font-mono text-[10px] text-gray-600 space-y-1 bg-white rounded-lg p-3 border border-gray-100">
-                  <p>{ct("messages.frontend_public_key_app_id_subscribe_user", "前端：公钥/App ID → 订阅用户", "Frontend: Public Key/App ID → Subscribe user")}</p>
-                  <p className="text-gray-400">{"  ↓ subscription"}</p>
-                  <p>{ct("messages.save_to_supabase_database_push_subscriptions_table", "存入 Supabase Database（push_subscriptions 表）", "Save to Supabase Database (push_subscriptions table)")}</p>
-                  <p className="text-gray-400">{"  ↓ trigger / cron"}</p>
-                  <p className="text-emerald-600">{ct("messages.edge_function_uses_private_key_master_secret", "Edge Function（使用私钥/Master Secret）", "Edge Function (uses Private Key/Master Secret)")}</p>
-                  <p className="text-gray-400">{"  ↓ API call"}</p>
-                  <p className="text-blue-600">{(() => {
-                    const ap = workingConfig.pushProvidersConfig?.activeProvider || 'webpush';
-                    const names: Record<string, string> = { webpush: 'Web Push API', fcm: 'FCM HTTP v1 API', onesignal: 'OneSignal REST API', jpush: ct("messages.jpush_rest_api_v3", "极光 REST API v3", "JPush REST API v3"), getui: ct("messages.getui_rest_api", "个推 REST API", "GeTui REST API") };
-                    return names[ap] || 'Push API';
-                  })()}</p>
-                </div>
-              </div>
-
-              {/* Security Notice */}
-              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mt-3">
-                <p className="text-xs text-amber-800 mb-2">{ct("messages.security_guidelines", "安全规范：", "Security Guidelines:")}</p>
-                <ul className="text-[11px] text-amber-700 space-y-1 list-disc list-inside">
-                  <li>{ct("messages.this_page_only_configures_public_identifiers_public_key", "此页面只配置公开标识（公钥、App ID、App Key），这些可以安全地暴露在前端代码中", "This page only configures public identifiers (Public Key, App ID, App Key) which are safe to expose in frontend code")}</li>
-                  <li>{ct("messages.all_secrets_vapid_private_key_fcm_server_key", "所有私密凭证（VAPID Private Key、FCM Server Key、OneSignal REST API Key、极光 Master Secret、个推 Master Secret）必须存放在 Supabase Edge Function 的 Secrets 环境变量中", "All secrets (VAPID Private Key, FCM Server Key, OneSignal REST API Key, JPush Master Secret, GeTui Master Secret) must be stored in Supabase Edge Function Secrets")}</li>
-                  <li>{ct("messages.push_send_requests_are_made_by_edge_functions", "推送发送请求由 Edge Function 发起，前端永远不接触私钥", "Push send requests are made by Edge Functions — frontend never touches private keys")}</li>
-                </ul>
-              </div>
-
-              {/* Deployment Guide */}
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mt-3">
-                <p className="text-xs text-blue-800 mb-2">{ct("messages.deployment_steps", "部署步骤：", "Deployment Steps:")}</p>
-                <ol className="text-[11px] text-blue-700 space-y-1 list-decimal list-inside">
-                  <li>{ct("messages.select_a_push_provider_above_and_fill_in", "在上方选择推送服务商并填写公钥/App ID", "Select a push provider above and fill in public key/App ID")}</li>
-                  <li>{ct("messages.configure_the_corresponding_private_key_master_secret_in", "在 Supabase Edge Function Secrets 中配置对应的私钥/Master Secret", "Configure the corresponding private key/Master Secret in Supabase Edge Function Secrets")}</li>
-                  <li>{ct("messages.deploy_edge_function_supabase_functions_deploy_push_proxy", "部署 Edge Function：supabase functions deploy push-proxy", "Deploy Edge Function: supabase functions deploy push-proxy")}</li>
-                  <li>{ct("messages.create_push_subscriptions_table_in_supabase_database_to", "在 Supabase Database 中创建 push_subscriptions 表存储用户订阅信息", "Create push_subscriptions table in Supabase Database to store user subscriptions")}</li>
-                  <li>{ct("messages.save_config_user_facing_app_will_auto_request", "保存配置，用户端会自动请求推送权限并订阅", "Save config — user-facing app will auto-request push permission and subscribe")}</li>
-                </ol>
-              </div>
-            </div>
-          </div>
+          <React.Suspense fallback={cmsTabFallback}>
+            <PushProvidersTab workingConfig={workingConfig} patchSection={patchSection} ct={ct} />
+          </React.Suspense>
         ) : activeTab === "pushNotification" ? (
           <div className="space-y-4">
             <div className="bg-white rounded-xl border border-gray-200 p-4 space-y-4">
@@ -4882,27 +2482,19 @@ export default function ConfigManagerPage() {
                         setPushSendStatus("sending");
                         setPushSendResult(null);
                         try {
-                          const bp = (workingConfig as any)?.backendProxyConfig;
-                          const url = (bp?.supabaseUrl || "").trim().replace(/\/$/, "");
-                          const anon = (bp?.supabaseAnonKey || "").trim();
-                          const fn = (bp?.edgeFunctionName || "server").trim() || "server";
-                          const base = `${url}/functions/v1/${fn}`;
-                          const token = (() => {
-                            try {
-                              const raw = localStorage.getItem("sb-" + (bp?.supabaseUrl || "").split("//")[1]?.split(".")[0] + "-auth-token");
-                              if (raw) {
-                                const parsed = JSON.parse(raw);
-                                return parsed?.access_token || "";
-                              }
-                            } catch { /* ignore */ }
-                            return "";
-                          })();
-                          const res = await fetch(`${base}/push/send`, {
+                          const auth = await edgeFnAuth(workingConfig);
+                          if (!auth) {
+                            throw new Error(ct("messages.configure_server_connection_first", "请先配置服务器连接", "Configure server connection first"));
+                          }
+                          if (!auth.token) {
+                            throw new Error(ct("messages.sign_in_with_supabase_first", "请先登录 Supabase 会话", "Sign in with Supabase first"));
+                          }
+                          const res = await fetch(`${auth.base}/push/send`, {
                             method: "POST",
                             headers: {
                               "Content-Type": "application/json",
-                              Authorization: token ? `Bearer ${token}` : "",
-                              apikey: anon,
+                              Authorization: `Bearer ${auth.token}`,
+                              apikey: auth.anon,
                             },
                             body: JSON.stringify({
                               title: pushForm.title.trim(),
@@ -4911,6 +2503,7 @@ export default function ConfigManagerPage() {
                             }),
                           });
                           const data = await res.json().catch(() => ({}));
+                          if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
                           setPushSendResult({
                             sent: data.sent ?? 0,
                             total: data.total ?? 0,
@@ -4939,106 +2532,9 @@ export default function ConfigManagerPage() {
             )}
           </div>
         ) : activeTab === "userRoles" ? (
-          <div className="space-y-4">
-            {isDeveloperMode() && contentRole !== "admin" && (
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-[11px] text-blue-900">
-                {ct("messages.dev_mode_this_entry_is_visible_if_your", "开发者模式：此处入口已显示。若当前账号在数据库中不是 content_role=admin，调用列表/写入接口会返回 403，属预期。生产环境仅超级管理员可见此页。", "Dev mode: this entry is visible. If your DB content_role is not admin, list/write APIs return 403 — expected. In production, only content super-admins see this page.")}
-              </div>
-            )}
-            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-[11px] text-amber-900 space-y-1">
-              <p>
-                {ct("messages.writes_user_profiles_by_supabase_auth_user_uuid", "按 Supabase Auth 用户 UUID 写入 user_profiles：content_role 为 none 或 editor；app_role 为 farmer 或 distributor。此页不能授予 content admin。", "Writes user_profiles by Supabase Auth user UUID: content_role is none or editor; app_role is farmer or distributor. This page cannot grant content admin.")}
-              </p>
-            </div>
-            <div className="bg-white rounded-xl border border-gray-200 p-4 space-y-3">
-              <h3 className="text-sm font-semibold text-gray-800">{ct("messages.distributor_list", "分销商列表", "Distributor list")}</h3>
-              <p className="text-xs text-gray-500">
-                {ct("messages.exports_distributors_max_5000_row_1_headers_with", "导出当前 app_role 为 distributor 的用户（最多 5000 条）。CSV 第 1 行为带说明的表头，第 2 行为填写规则；改角色时请填英文 none / editor / farmer / distributor，勿用对勾。", "Exports distributors (max 5000). Row 1: headers with hints; row 2: how to fill. Use lowercase English for roles — no checkmarks.")}
-              </p>
-              <button
-                type="button"
-                disabled={roleApplyBusy}
-                onClick={() => void downloadDistributorsCsv()}
-                className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm hover:bg-emerald-700 disabled:opacity-50"
-              >
-                {roleApplyBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
-                {ct("messages.download_csv", "下载 CSV", "Download CSV")}
-              </button>
-            </div>
-            <div className="bg-white rounded-xl border border-gray-200 p-4 space-y-3">
-              <h3 className="text-sm font-semibold text-gray-800">{ct("messages.excel_bulk_import", "批量导入 Excel", "Excel bulk import")}</h3>
-              <p className="text-xs text-gray-500">
-                {ct("messages.headers_must_resolve_to_user_id_content_role", "表头须能识别 user_id、content_role、app_role（可与下载文件一样带中文说明）。单元格请填英文小写：none、editor、farmer、distributor；不要用 √。留空表示该项不修改。每次最多 200 行，超出自动分批。", "Headers must resolve to user_id, content_role, app_role (Chinese hints OK). Values: lowercase none, editor, farmer, distributor — no checkmarks. Blank = skip field. Batches of 200.")}
-              </p>
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={downloadRoleImportTemplate}
-                  className="px-3 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-50"
-                >
-                  {ct("messages.download_template", "下载导入模板", "Download template")}
-                </button>
-                <button
-                  type="button"
-                  disabled={roleApplyBusy}
-                  onClick={() => roleExcelInputRef.current?.click()}
-                  className="px-3 py-2 text-sm bg-gray-800 text-white rounded-lg hover:bg-gray-900 disabled:opacity-50"
-                >
-                  {ct("messages.upload_excel", "上传 Excel", "Upload Excel")}
-                </button>
-              </div>
-            </div>
-            <div className="bg-white rounded-xl border border-gray-200 p-4 space-y-3">
-              <h3 className="text-sm font-semibold text-gray-800">{ct("messages.single_user", "单个用户", "Single user")}</h3>
-              <input
-                type="text"
-                value={roleSingleUserId}
-                onChange={(e) => setRoleSingleUserId(e.target.value)}
-                placeholder={ct("messages.user_uuid", "用户 UUID", "User UUID")}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg font-mono text-xs"
-              />
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs text-gray-600 mb-1">content_role</label>
-                  <select
-                    value={roleSingleContent}
-                    onChange={(e) => setRoleSingleContent(e.target.value as "" | "none" | "editor")}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white"
-                  >
-                    <option value="">{ct("messages.leave_unchanged", "不修改", "Leave unchanged")}</option>
-                    <option value="none">none</option>
-                    <option value="editor">editor</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs text-gray-600 mb-1">app_role</label>
-                  <select
-                    value={roleSingleApp}
-                    onChange={(e) => setRoleSingleApp(e.target.value as "" | "farmer" | "distributor")}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white"
-                  >
-                    <option value="">{ct("messages.leave_unchanged", "不修改", "Leave unchanged")}</option>
-                    <option value="farmer">farmer</option>
-                    <option value="distributor">distributor</option>
-                  </select>
-                </div>
-              </div>
-              <button
-                type="button"
-                disabled={roleApplyBusy}
-                onClick={() => void applySingleUserRole()}
-                className="w-full py-2.5 bg-emerald-600 text-white rounded-lg text-sm hover:bg-emerald-700 disabled:opacity-50 flex items-center justify-center gap-2"
-              >
-                {roleApplyBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
-                {ct("messages.apply", "应用", "Apply")}
-              </button>
-            </div>
-            {roleBulkResult ? (
-              <pre className="text-[11px] bg-gray-50 border border-gray-200 rounded-lg p-3 whitespace-pre-wrap break-words max-h-48 overflow-y-auto">
-                {roleBulkResult}
-              </pre>
-            ) : null}
-          </div>
+          <React.Suspense fallback={cmsTabFallback}>
+            <UserRolesTab workingConfig={workingConfig} ct={ct} contentRole={contentRole} />
+          </React.Suspense>
         ) : activeTab === "chatContact" ? (
           <>
             <div className="mb-4 p-4 rounded-xl border-2 border-amber-200 bg-amber-50/95 shadow-sm">
@@ -5099,12 +2595,7 @@ export default function ConfigManagerPage() {
                     <button
                       key={opt.key}
                       type="button"
-                      onClick={() => {
-                        const newConfig = JSON.parse(JSON.stringify(workingConfig));
-                        newConfig.communityUiMode = opt.key;
-                        setWorkingConfig(newConfig);
-                        setHasChanges(true);
-                      }}
+                      onClick={() => replaceSection("communityUiMode", opt.key)}
                       className={`px-4 py-2 rounded-lg text-sm border-2 transition-colors ${
                         active ? "border-emerald-500 bg-emerald-50 text-emerald-800" : "border-gray-200 bg-white text-gray-700 hover:bg-gray-50"
                       }`}

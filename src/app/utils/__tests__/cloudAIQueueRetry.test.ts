@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  ABORTED,
   AI_QUEUE_TIMEOUT,
+  AI_TIMEOUT,
   QUEUE_MAX_ATTEMPTS,
   QUEUE_MAX_WAIT_MS,
+  UPSTREAM_BUSY,
   queueRetryDelayMs,
 } from "../../services/CloudAIService";
 
@@ -27,5 +30,8 @@ describe("cloud AI queue retry helpers", () => {
     expect(QUEUE_MAX_WAIT_MS).toBe(120_000);
     expect(QUEUE_MAX_ATTEMPTS).toBe(15);
     expect(AI_QUEUE_TIMEOUT).toBe("AI_QUEUE_TIMEOUT");
+    expect(AI_TIMEOUT).toBe("AI_TIMEOUT");
+    expect(UPSTREAM_BUSY).toBe("UPSTREAM_BUSY");
+    expect(ABORTED).toBe("ABORTED");
   });
 });

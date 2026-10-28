@@ -253,7 +253,7 @@ export interface CloudAIConfig {
   enabled: boolean;                // 是否启用深度分析
   providerName: string;            // 显示名称（如：通义千问、Gemini、GPT-4o）
   edgeFunctionName: string;        // Supabase Edge Function 名称（默认 ai-vision-proxy）
-  modelId: string;                 // 模型标识（传给Edge Function，如 qwen-vl-plus、gemini-2.0-flash）
+  modelId: string;                 // 模型标识（推送到 app_config 由 Edge 读取；Secret AI_MODEL_ID 优先），如 qwen-vl-plus、gemini-2.0-flash
   systemPrompt: string;            // 系统提示词（可自定义分析侧重点）
   maxTokens: number;               // 最大输出token数
   /** 前端日调用上限覆盖（未设置则用 cloudAIGuard 内置默认） */
@@ -278,12 +278,10 @@ export interface CloudAIConfig {
   clientMaxImageSize?: number;
   /** JPEG 压缩质量 0–1 覆盖 */
   clientImageQuality?: number;
-  /** 仅云端识图：Supabase 项目 URL（优先；留空则回退 backendProxyConfig，不依赖 IM 开关） */
+  /** 仅云端识图：Supabase 项目 URL。backendProxyConfig 启用且有 URL/anon 时不生效（一律用后端凭证）；留空回退 backendProxyConfig */
   supabaseUrl?: string;
-  /** 仅云端识图：Anon Key（优先；留空则回退 backendProxyConfig） */
+  /** 仅云端识图：Anon Key，生效规则同 supabaseUrl */
   supabaseAnonKey?: string;
-  /** 超级管理员：允许未登录用户使用 AI 助手（含云端与本地 ONNX） */
-  allowUnauthenticatedUse?: boolean;
 }
 
 // 后端代理配置接口（Supabase 专用；聊天固定走 Supabase Realtime）

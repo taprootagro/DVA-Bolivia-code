@@ -112,17 +112,25 @@ export async function syncStorePeersFromCloud(storeUserId: string): Promise<numb
   const sessionOk = await ensureStoreClientSession(client, storeUserId);
   if (!sessionOk) return 0;
 
-  const { data: rows, error } = await client
-    .from("merchant_farmer_channels")
-    .select("merchant_user_id, farmer_user_id, channel_id, created_at")
-    .eq("merchant_user_id", storeUserId)
-    .order("created_at", { ascending: false });
-
-  if (error) {
-    console.error("[storeBindingRepo] fetch channels", error);
-    return 0;
+  const rows: ChannelRow[] = [];
+  const pageSize = 500;
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await client
+      .from("merchant_farmer_channels")
+      .select("merchant_user_id, farmer_user_id, channel_id, created_at")
+      .eq("merchant_user_id", storeUserId)
+      .order("created_at", { ascending: false })
+      .range(from, from + pageSize - 1);
+    if (error) {
+      console.error("[storeBindingRepo] fetch channels", error);
+      return 0;
+    }
+    if (!data?.length) break;
+    rows.push(...(data as ChannelRow[]));
+    if (data.length < pageSize) break;
   }
-  if (!rows?.length) {
+
+  if (!rows.length) {
     console.warn(
       "[storeBindingRepo] fetch channels returned 0 rows",
       { storeUserId },
@@ -134,19 +142,23 @@ export async function syncStorePeersFromCloud(storeUserId: string): Promise<numb
   const profiles = new Map<string, { name: string; avatar: string; subtitle: string }>();
 
   if (farmerIds.length) {
-    const { data: profRows, error: profErr } = await client
-      .from("user_profiles")
-      .select("user_id, profile, display_name, avatar_url")
-      .in("user_id", farmerIds);
-    if (!profErr && profRows) {
-      for (const r of profRows as ProfileRow[]) {
-        profiles.set(
-          r.user_id,
-          pickProfileFields(r.profile, r.display_name, r.avatar_url),
-        );
+    const batchSize = 100;
+    for (let i = 0; i < farmerIds.length; i += batchSize) {
+      const batch = farmerIds.slice(i, i + batchSize);
+      const { data: profRows, error: profErr } = await client
+        .from("user_profiles")
+        .select("user_id, profile, display_name, avatar_url")
+        .in("user_id", batch);
+      if (!profErr && profRows) {
+        for (const r of profRows as ProfileRow[]) {
+          profiles.set(
+            r.user_id,
+            pickProfileFields(r.profile, r.display_name, r.avatar_url),
+          );
+        }
+      } else if (profErr) {
+        console.warn("[storeBindingRepo] fetch profiles", profErr);
       }
-    } else if (profErr) {
-      console.warn("[storeBindingRepo] fetch profiles", profErr);
     }
   }
 

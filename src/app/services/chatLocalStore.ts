@@ -2,7 +2,7 @@
 // chatLocalStore.ts
 // ============================================================================
 // 目标：把"聊天消息 + 媒体 blob"长期留在手机本地（IndexedDB），
-//       云端（Supabase）只当短期临时桶（默认 3 天，见 CHAT_RETENTION_DAYS / pg_cron），过期自动清理。
+//       云端（Supabase）只当短期临时桶（默认 7 天，见 CHAT_RETENTION_DAYS / pg_cron），过期自动清理。
 //       服务端 purge 后客户端仍可通过本地缓存展示历史与已缓存媒体；since 增量补拉窗口与保留天数对齐。
 //
 // 对外 API：
@@ -71,14 +71,68 @@ function promisifyReq<T>(req: IDBRequest<T>): Promise<T> {
 
 // ---- Messages -----------------------------------------------------------
 
+export async function getOutboxForChannel(channelName: string): Promise<ChatMessage[]> {
+  if (!channelName) return [];
+  try {
+    return await withMsgStore("readonly", async (store) => {
+      const idx = store.index(IDX_BY_CHANNEL);
+      const range = IDBKeyRange.bound(
+        [channelName, -Infinity],
+        [channelName, Infinity],
+      );
+      const out: ChatMessage[] = [];
+      await new Promise<void>((resolve, reject) => {
+        const req = idx.openCursor(range, "next");
+        req.onsuccess = () => {
+          const cur = req.result;
+          if (!cur) return resolve();
+          const m = cur.value as ChatMessage;
+          if (m.status === "sending" || m.status === "failed") out.push(m);
+          cur.continue();
+        };
+        req.onerror = () => reject(req.error);
+      });
+      return out.sort((a, b) => a.timestamp - b.timestamp);
+    });
+  } catch {
+    return [];
+  }
+}
+
+export async function deleteLocalMessage(id: string): Promise<void> {
+  if (!id) return;
+  try {
+    await withMsgStore("readwrite", (store) => {
+      store.delete(id);
+    });
+  } catch {
+    /* ignore */
+  }
+}
+
+export async function hasLocalMessageId(id: string): Promise<boolean> {
+  if (!id) return false;
+  try {
+    return await withMsgStore("readonly", (store) =>
+      new Promise<boolean>((resolve) => {
+        const req = store.get(id);
+        req.onsuccess = () => resolve(!!req.result);
+        req.onerror = () => resolve(false);
+      }),
+    );
+  } catch {
+    return false;
+  }
+}
+
 export async function cacheMessages(msgs: ChatMessage[]): Promise<void> {
   if (!msgs?.length) return;
   try {
     await withMsgStore("readwrite", (store) => {
       for (const m of msgs) {
         if (!m?.id || !m?.channelName) continue;
-        // 仅缓存已落地的消息（避免把失败草稿写入，失败状态已经在内存中处理）
-        if (m.status === "failed") continue;
+        // sending / failed 用于发件箱；sent 为正常历史
+        if (m.status !== "sent" && m.status !== "sending" && m.status !== "failed") continue;
         try { store.put(m); } catch { /* ignore single put failure */ }
       }
     });

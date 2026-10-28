@@ -34,8 +34,11 @@ import { getSupabaseBrowserClient, invalidateSupabaseBrowserClientCache } from '
 import { clearLinkedGoogleCache } from './linkedGoogleCache';
 import { clearProfileEditCooldown } from './profileEditCooldown';
 import { clearCommunityRoleCache, clearStoreShellState } from './chatTabPersistence';
+import { clearChatUiMemory } from '../services/chatUiMemory';
+import { CONFIG_STORAGE_KEY } from '../constants';
 import { clearEdgeProfileCache } from './edgeProfileCache';
 import { clearContentSuperAdminCache } from './contentSuperAdminCache';
+import { unbindWebPush } from './webPush';
 
 /** 登录状态写入 storage 后广播；Layout keep-alive 下页面不会卸载，需监听以刷新 UI */
 export const TAPROOT_AUTH_CHANGE_EVENT = "taproot-auth-change";
@@ -477,7 +480,35 @@ function generateNumericId(): string {
  * Clear all auth data (login status + all IDs).
  * Use this for "delete account" scenarios.
  */
+function clearLocalChatSession(): void {
+  clearChatUiMemory();
+  try {
+    const raw = storageGet(CONFIG_STORAGE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as { chatContact?: Record<string, unknown> };
+    if (!parsed.chatContact) return;
+    parsed.chatContact = {
+      merchantUserId: "",
+      channelId: "",
+      name: "",
+      avatar: "",
+      subtitle: "",
+      verifiedDomains: parsed.chatContact.verifiedDomains ?? [],
+      boundAt: 0,
+      boundFrom: "",
+      phone: "",
+      storeId: "",
+      imUserId: "",
+      imProvider: "",
+    };
+    storageSet(CONFIG_STORAGE_KEY, JSON.stringify(parsed));
+  } catch {
+    /* ignore */
+  }
+}
+
 export function clearAuthData(): void {
+  clearLocalChatSession();
   storageRemove(LOGIN_KEY);
   storageRemove(NUMERIC_ID_KEY);
   storageRemove(SERVER_USER_ID_KEY);
@@ -499,6 +530,8 @@ export function clearAuthData(): void {
  * resurrected refresh token (common in the Capacitor WebView after logout).
  */
 export async function logoutUser(): Promise<void> {
+  // Before signOut: the backend row can only be removed with a still-valid session.
+  await unbindWebPush(getSessionAccessTokenForEdge);
   const client = getSupabaseBrowserClient();
   try {
     await client?.auth.signOut({ scope: 'local' });

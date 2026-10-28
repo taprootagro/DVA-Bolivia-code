@@ -14,6 +14,11 @@ const ROOT = path.join(__dirname, '..');
 
 const CMS_FILES = [
   'src/app/components/ConfigManagerPage.tsx',
+  'src/app/components/cms/AiModelTab.tsx',
+  'src/app/components/cms/SupabaseTab.tsx',
+  'src/app/components/cms/LoginConfigTab.tsx',
+  'src/app/components/cms/PushProvidersTab.tsx',
+  'src/app/components/cms/UserRolesTab.tsx',
   'src/app/components/ConfigManagerGate.tsx',
   'src/app/components/RichTextEditor.tsx',
   'src/app/components/CmsStorageUploadRow.tsx',

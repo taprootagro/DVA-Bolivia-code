@@ -178,10 +178,15 @@ export function isCloudAiImageSizeReady(
 /** Compress for analyze and follow-up-with-image (no minimum size gate). */
 export async function prepareImageForCloudAI(base64: string): Promise<string> {
   const cfg = cloudAIGuard.getConfig();
-  if (isCloudAiImageSizeReady(base64, cfg)) {
-    return base64;
+  let out = base64;
+  if (!isCloudAiImageSizeReady(base64, cfg)) {
+    out = await cloudAIGuard.compressImage(base64);
   }
-  return cloudAIGuard.compressImage(base64);
+  const maxAllowed = Math.ceil(cfg.maxImageBytes * 1.2);
+  if (estimateDataUrlBytes(out) > maxAllowed) {
+    throw new Error("IMAGE_TOO_LARGE");
+  }
+  return out;
 }
 
 export async function compressImage(
@@ -280,22 +285,30 @@ export class CloudAIGuard {
     });
   }
 
-  /** Check dedup cache for this image, returns cached result JSON or null */
-  async checkDedup(imageBase64: string, uiLanguage?: string): Promise<string | null> {
-    if (!this.config.enableDedup) return null;
+  /** Check dedup cache for this image. Returns the hash so cacheResult can skip a second hash. */
+  async checkDedup(
+    imageBase64: string,
+    uiLanguage?: string,
+  ): Promise<{ result: string | null; hash: string | null }> {
+    if (!this.config.enableDedup) return { result: null, hash: null };
     const hash = await hashImageBase64(imageBase64);
     const cached = findCachedResult(hash, uiLanguage);
     if (cached) {
       console.log(`[CloudAIGuard] Dedup hit! Image hash: ${hash.slice(0, 12)}...`);
     }
-    return cached;
+    return { result: cached, hash };
   }
 
-  /** Cache a result for an image */
-  async cacheResult(imageBase64: string, resultJson: string, uiLanguage?: string): Promise<void> {
+  /** Cache a result for an image. Pass hash from checkDedup to avoid hashing twice. */
+  async cacheResult(
+    imageBase64: string,
+    resultJson: string,
+    uiLanguage?: string,
+    hash?: string | null,
+  ): Promise<void> {
     if (!this.config.enableDedup) return;
-    const hash = await hashImageBase64(imageBase64);
-    addToCache(hash, resultJson, this.config.maxCacheEntries, uiLanguage);
+    const resolved = hash || (await hashImageBase64(imageBase64));
+    addToCache(resolved, resultJson, this.config.maxCacheEntries, uiLanguage);
   }
 
   /** Get image hash for dedup tracking */

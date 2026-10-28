@@ -56,13 +56,15 @@ export function AccountManagementPanel() {
     setDeleting(true);
     try {
       const result = await deleteAccount();
-      if (!result.ok) {
+      if (result.ok === false) {
         const msg =
-          result.status === 401
-            ? p.accountDeleteSessionExpired || t.profile.profileCloudSyncFailed
-            : result.status === 429
-              ? p.accountDeleteRateLimited
-              : p.accountDeleteFailed;
+          result.error === "backend_unavailable"
+            ? p.accountDeleteBackendUnavailable || p.accountDeleteFailed
+            : result.status === 401
+              ? p.accountDeleteSessionExpired || t.profile.profileCloudSyncFailed
+              : result.status === 429
+                ? p.accountDeleteRateLimited
+                : p.accountDeleteFailed;
         await toast.show({ text: msg || "Failed", duration: "long", position: "bottom" });
         return;
       }

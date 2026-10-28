@@ -90,6 +90,7 @@ export class ChatProxyService {
   private _mockWarningShown = false;
   private _seenMessageIds: Set<string> = new Set();
   private _adapterUnsubscribe: (() => void) | null = null;
+  private _mockReplyTimer: ReturnType<typeof setTimeout> | null = null;
   /** Serializes leave/join to avoid Realtime races during role shell swap */
   private _channelOpChain: Promise<void> = Promise.resolve();
 
@@ -184,7 +185,7 @@ export class ChatProxyService {
    * WebSocket push — no polling needed. This method subscribes to the
    * IMAdapter's onMessage callback.
    */
-  startPolling(_intervalMs?: number): void {
+  attachRealtime(_intervalMs?: number): void {
     this.stopPolling(); // Clear any existing subscription
 
     if (this._mode === "backend") {
@@ -202,8 +203,17 @@ export class ChatProxyService {
     }
   }
 
+  /** @deprecated use attachRealtime */
+  startPolling(intervalMs?: number): void {
+    this.attachRealtime(intervalMs);
+  }
+
   /** Stop listening for messages (solo unsubscribe, keeps WebSocket alive) */
   stopPolling(): void {
+    if (this._mockReplyTimer != null) {
+      clearTimeout(this._mockReplyTimer);
+      this._mockReplyTimer = null;
+    }
     if (this._adapterUnsubscribe) {
       this._adapterUnsubscribe();
       this._adapterUnsubscribe = null;
@@ -287,7 +297,8 @@ export class ChatProxyService {
     duration?: number,
     targetUserId?: string,
     audioBlob?: Blob,
-    videoBlob?: Blob
+    videoBlob?: Blob,
+    clientMessageId?: string,
   ): Promise<ChatMessage> {
     if (this._mode === "mock" && !this._mockWarningShown) {
       console.warn(
@@ -298,7 +309,9 @@ export class ChatProxyService {
     }
 
     const newMessage: ChatMessage = {
-      id: `m${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+      id:
+        clientMessageId?.trim() ||
+        `m${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
       channelName: this.currentChannel,
       senderId: this.currentUserId,
       content,
@@ -338,11 +351,13 @@ export class ChatProxyService {
             newMessage.content = result.audioUrl;
           }
         } else {
+          if (result.error?.startsWith("CHAT_RATE_LIMIT")) throw new Error(result.error);
           newMessage.status = "failed";
           console.error("[ChatProxy] Send failed:", result.error);
         }
         return newMessage;
       } catch (error) {
+        if (error instanceof Error && error.message.startsWith("CHAT_RATE_LIMIT")) throw error;
         console.error("[ChatProxy] Send failed:", error);
         newMessage.status = "failed";
         return newMessage;
@@ -406,7 +421,9 @@ export class ChatProxyService {
     const replies = mockReplies[userMsg.type] || mockReplies.text;
     const replyContent = replies[Math.floor(Math.random() * replies.length)];
 
-    setTimeout(() => {
+    if (this._mockReplyTimer != null) clearTimeout(this._mockReplyTimer);
+    this._mockReplyTimer = setTimeout(() => {
+      this._mockReplyTimer = null;
       const replyMsg: ChatMessage = {
         id: `mock_reply_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
         channelName: userMsg.channelName,

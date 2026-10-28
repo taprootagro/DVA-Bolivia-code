@@ -50,6 +50,7 @@ export function ArticleDetailPage({ onClose, article }: ArticleDetailPageProps) 
               <CmsMediaImg
                 src={thumb}
                 alt={latestArticle.title}
+                loading="eager"
                 className="w-full h-full object-fill"
               />
             ) : null}

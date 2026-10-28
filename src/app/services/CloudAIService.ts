@@ -33,13 +33,38 @@ export type AIRequestLocationContext = {
   accuracyMeters?: number;
 };
 
+export type AIChatTurn = { role: "user" | "assistant"; content: string };
+
 export type AIRequestExtras = {
   locationContext?: AIRequestLocationContext;
+  /** Last ≤10 follow-up turns (each ≤2000 chars). Initial analysis stays in previousAnalysis. */
+  history?: AIChatTurn[];
 };
 
 function extrasToBody(extras?: AIRequestExtras): Record<string, unknown> {
-  if (!extras?.locationContext) return {};
-  return { locationContext: extras.locationContext };
+  const out: Record<string, unknown> = {};
+  if (extras?.locationContext) out.locationContext = extras.locationContext;
+  if (extras?.history && extras.history.length > 0) out.history = extras.history;
+  return out;
+}
+
+export function buildCloudAiHistory(
+  messages: Array<{ role: "user" | "ai"; text?: string; image?: string; voiceDuration?: number }>,
+): AIChatTurn[] {
+  const turns: AIChatTurn[] = [];
+  for (const m of messages) {
+    const content = m.image
+      ? "[Photo]"
+      : typeof m.voiceDuration === "number"
+        ? `(voice message, ${m.voiceDuration}s)`
+        : (m.text || "").trim();
+    if (!content) continue;
+    turns.push({
+      role: m.role === "ai" ? "assistant" : "user",
+      content: content.slice(0, 2_000),
+    });
+  }
+  return turns.slice(-10);
 }
 
 // ---- Configuration (reads from safeStorage like ChatProxyService) ----
@@ -48,7 +73,6 @@ interface CloudAICfg {
   providerName: string;
   edgeFunctionName: string;
   modelId: string;
-  systemPrompt: string;
   maxTokens: number;
   /** 仅用于云端识图；优先于 backendProxyConfig 中的 Supabase 地址 */
   supabaseUrl: string;
@@ -64,13 +88,30 @@ interface BackendCfg {
 /**
  * 与 ConfigProvider 使用同一套合并规则：defaultConfig ← localStorage（MERGE_REPLACE），
  * 保证「设置 → 内容管理」保存的配置与 CloudAIService 读取的一致，不在此重复手写默认值。
+ * 结果按模块缓存：同 tab 写入方均派发 `configUpdate`，跨 tab 由 `storage` 事件失效。
  */
+let mergedConfigCache: HomePageConfig | null = null;
+
 function getMergedHomePageConfig(): HomePageConfig {
+  if (mergedConfigCache) return mergedConfigCache;
   const parsed = storageGetJSON<HomePageConfig>(CONFIG_STORAGE_KEY);
-  if (parsed) {
-    return deepMerge(defaultConfig, parsed, MERGE_REPLACE);
-  }
-  return defaultConfig;
+  mergedConfigCache = parsed
+    ? (deepMerge(
+        defaultConfig as unknown as Record<string, unknown>,
+        parsed as unknown as Record<string, unknown>,
+        MERGE_REPLACE,
+      ) as unknown as HomePageConfig)
+    : defaultConfig;
+  return mergedConfigCache;
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("configUpdate", () => {
+    mergedConfigCache = null;
+  });
+  window.addEventListener("storage", (e) => {
+    if (e.key === CONFIG_STORAGE_KEY || e.key === null) mergedConfigCache = null;
+  });
 }
 
 function getCloudAIConfig(): CloudAICfg {
@@ -80,7 +121,6 @@ function getCloudAIConfig(): CloudAICfg {
     providerName: c.providerName,
     edgeFunctionName: c.edgeFunctionName,
     modelId: c.modelId,
-    systemPrompt: c.systemPrompt,
     maxTokens: c.maxTokens,
     supabaseUrl: (c.supabaseUrl ?? "").trim(),
     supabaseAnonKey: (c.supabaseAnonKey ?? "").trim(),
@@ -107,31 +147,33 @@ let cloudAiSupabaseMismatchWarned = false;
  * 因此：在 backendProxyConfig 已启用且具备 url/anon 时，**一律用后端配置** 调用
  * `functions/v1/ai-vision-proxy`；仅当未配置后端时才回退 cloudAIConfig。
  */
+export function pickCloudAISupabase(
+  cloud: { supabaseUrl?: string; supabaseAnonKey?: string } | undefined,
+  backend: { enabled?: boolean; supabaseUrl?: string; supabaseAnonKey?: string } | undefined,
+): { url: string; anon: string; usesBackend: boolean } {
+  const backendUrl = (backend?.supabaseUrl || "").trim().replace(/\/+$/, "");
+  const backendAnon = (backend?.supabaseAnonKey || "").trim();
+  if (backend?.enabled === true && backendUrl && backendAnon) {
+    return { url: backendUrl, anon: backendAnon, usesBackend: true };
+  }
+  const cloudUrl = (cloud?.supabaseUrl || "").trim().replace(/\/+$/, "");
+  const cloudAnon = (cloud?.supabaseAnonKey || "").trim();
+  return { url: cloudUrl || backendUrl, anon: cloudAnon || backendAnon, usesBackend: false };
+}
+
 function resolvedSupabaseForCloudAI(): { url: string; anon: string } {
   const cloud = getCloudAIConfig();
-  const backend = getBackendConfig();
-  const backendUrl = (backend.supabaseUrl || "").trim().replace(/\/+$/, "");
-  const backendAnon = (backend.supabaseAnonKey || "").trim();
-  const cloudUrl = (cloud.supabaseUrl || "").trim().replace(/\/+$/, "");
-  const cloudAnon = (cloud.supabaseAnonKey || "").trim();
-
-  if (backend.enabled && backendUrl && backendAnon) {
-    if (
-      !cloudAiSupabaseMismatchWarned &&
-      ((cloudUrl && cloudUrl !== backendUrl) ||
-        (cloudAnon && cloudAnon !== backendAnon))
-    ) {
+  const { url, anon, usesBackend } = pickCloudAISupabase(cloud, getBackendConfig());
+  if (usesBackend && !cloudAiSupabaseMismatchWarned) {
+    const cloudUrl = cloud.supabaseUrl.replace(/\/+$/, "");
+    if ((cloudUrl && cloudUrl !== url) || (cloud.supabaseAnonKey && cloud.supabaseAnonKey !== anon)) {
       cloudAiSupabaseMismatchWarned = true;
       console.warn(
         "[CloudAI] cloudAIConfig.supabaseUrl / supabaseAnonKey differ from backendProxyConfig. " +
           "Using backend credentials so the user JWT matches the Edge project (fixes spurious 401).",
       );
     }
-    return { url: backendUrl, anon: backendAnon };
   }
-
-  const url = (cloudUrl || backendUrl).replace(/\/+$/, "");
-  const anon = cloudAnon || backendAnon;
   return { url, anon };
 }
 
@@ -150,6 +192,36 @@ export function cloudAIUsesBackend(): boolean {
   return getEndpointUrl() !== "";
 }
 
+export type CloudAIHealth = { provider: string; modelId: string; configured: boolean };
+
+let healthProbe: { endpoint: string; promise: Promise<CloudAIHealth | null> } | null = null;
+
+/**
+ * GET `<endpoint>/health` — the provider/model the Edge actually uses (AI_PROVIDER secret + app_config).
+ * One probe per endpoint per app session; failed probes are not cached.
+ */
+export function getCloudAIHealth(): Promise<CloudAIHealth | null> {
+  const endpoint = getEndpointUrl();
+  if (!endpoint) return Promise.resolve(null);
+  if (healthProbe?.endpoint === endpoint) return healthProbe.promise;
+  const promise = (async (): Promise<CloudAIHealth | null> => {
+    try {
+      const res = await fetch(`${endpoint}/health`, { headers: await getCloudAIRequestHeaders() });
+      if (!res.ok) return null;
+      const d = (await res.json()) as { provider?: unknown; modelId?: unknown; configured?: unknown };
+      if (typeof d.provider !== "string") return null;
+      return { provider: d.provider, modelId: String(d.modelId ?? ""), configured: d.configured === true };
+    } catch {
+      return null;
+    }
+  })();
+  healthProbe = { endpoint, promise };
+  void promise.then((h) => {
+    if (!h && healthProbe?.promise === promise) healthProbe = null;
+  });
+  return promise;
+}
+
 /** Thrown when refresh_token is invalid after silent retry — user must re-verify identity. */
 export const CLOUD_AI_SESSION_EXPIRED = 'SESSION_EXPIRED';
 
@@ -158,6 +230,15 @@ export const CLOUD_AI_SESSION_TRANSIENT = 'SESSION_TRANSIENT';
 
 /** All queue retries exhausted while server returns QUEUE (global AI concurrency full). */
 export const AI_QUEUE_TIMEOUT = 'AI_QUEUE_TIMEOUT';
+
+export const AI_TIMEOUT = 'AI_TIMEOUT';
+export const AI_NETWORK = 'AI_NETWORK';
+export const UPSTREAM_BUSY = 'UPSTREAM_BUSY';
+/** Edge 502 PROVIDER_AUTH / PROVIDER_CONFIG — bad provider key or model; retrying will not help. */
+export const AI_PROVIDER_MISCONFIGURED = 'AI_PROVIDER_MISCONFIGURED';
+export const IMAGE_TOO_LARGE = 'IMAGE_TOO_LARGE';
+export const IMAGE_DECODE_FAILED = 'IMAGE_DECODE_FAILED';
+export const ABORTED = 'ABORTED';
 
 /** Cloud AI enabled but no backend endpoint — mock blocked in production builds. */
 export const CLOUD_AI_MOCK = 'CLOUD_AI_MOCK';
@@ -173,8 +254,61 @@ export const QUEUE_MAX_ATTEMPTS = 15;
 
 export type CloudAIQueueWaitHandler = (attempt: number, waitSeconds: number) => void;
 
-function sleepMs(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleepMs(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error(ABORTED));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new Error(ABORTED));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function isAbortError(err: unknown, externalSignal?: AbortSignal): boolean {
+  if (externalSignal?.aborted) return true;
+  const e = err as { name?: string; message?: string };
+  return e?.message === ABORTED || (e?.name === "AbortError" && externalSignal?.aborted);
+}
+
+const KNOWN_CLOUD_AI_ERRORS = new Set([
+  ABORTED,
+  AI_TIMEOUT,
+  AI_NETWORK,
+  UPSTREAM_BUSY,
+  AI_PROVIDER_MISCONFIGURED,
+  AI_QUEUE_TIMEOUT,
+  CLOUD_AI_SESSION_EXPIRED,
+  CLOUD_AI_SESSION_TRANSIENT,
+  CLOUD_AI_MOCK,
+  "CLOUD_AI_DISABLED",
+  "NOT_LOGGED_IN",
+  "DAILY_LIMIT_REACHED",
+  "IMAGE_TOO_LARGE",
+  IMAGE_DECODE_FAILED,
+  "RATE_LIMITED",
+  "CHAT_TOO_FAST",
+]);
+
+function mapFetchFailure(err: unknown, externalSignal?: AbortSignal): Error {
+  if (isAbortError(err, externalSignal)) return new Error(ABORTED);
+  const e = err as { name?: string; message?: string };
+  const msg = (e?.message || "").trim();
+  if (msg && (KNOWN_CLOUD_AI_ERRORS.has(msg) || msg.startsWith("COOLDOWN:"))) {
+    return err instanceof Error ? err : new Error(msg);
+  }
+  if (e?.name === "AbortError") return new Error(AI_TIMEOUT);
+  if (msg.includes("Failed to fetch") || msg.includes("NetworkError")) {
+    return new Error(AI_NETWORK);
+  }
+  return err instanceof Error ? err : new Error(AI_NETWORK);
 }
 
 /** Server retry_after plus ±30% jitter to avoid synchronized re-acquire storms. */
@@ -186,14 +320,34 @@ export function queueRetryDelayMs(serverSeconds: number): number {
 
 async function fetchWithQueueRetry(
   url: string,
-  init: RequestInit & { signal?: AbortSignal },
-  onQueueWait?: CloudAIQueueWaitHandler | null,
+  init: Omit<RequestInit, "signal"> & { body?: string },
+  options: {
+    attemptTimeoutMs: number;
+    externalSignal?: AbortSignal;
+    onQueueWait?: CloudAIQueueWaitHandler | null;
+  },
 ): Promise<Response> {
   const deadline = Date.now() + QUEUE_MAX_WAIT_MS;
   let attempt = 0;
   while (true) {
+    if (options.externalSignal?.aborted) throw new Error(ABORTED);
     attempt += 1;
-    const res = await fetchWith401Retry(url, init);
+
+    const attemptController = new AbortController();
+    const linkAbort = () => attemptController.abort();
+    options.externalSignal?.addEventListener("abort", linkAbort, { once: true });
+    const timeoutId = setTimeout(() => attemptController.abort(), options.attemptTimeoutMs);
+
+    let res: Response;
+    try {
+      res = await fetchWith401Retry(url, { ...init, signal: attemptController.signal });
+    } catch (err) {
+      throw mapFetchFailure(err, options.externalSignal);
+    } finally {
+      clearTimeout(timeoutId);
+      options.externalSignal?.removeEventListener("abort", linkAbort);
+    }
+
     if (res.status !== 429) return res;
 
     let code = "";
@@ -214,8 +368,8 @@ async function fetchWithQueueRetry(
     if (Date.now() + waitMs > deadline || attempt >= QUEUE_MAX_ATTEMPTS) {
       throw new Error(AI_QUEUE_TIMEOUT);
     }
-    onQueueWait?.(attempt, Math.ceil(waitMs / 1000));
-    await sleepMs(waitMs);
+    options.onQueueWait?.(attempt, Math.ceil(waitMs / 1000));
+    await sleepMs(waitMs, options.externalSignal);
   }
 }
 
@@ -244,17 +398,35 @@ async function getCloudAIRequestHeaders(): Promise<Record<string, string>> {
  * On 401: sync session → retry → refresh → retry.
  * After all retries fail on a backend call, callers map 401 to SESSION_EXPIRED.
  */
+function mergeCloudAIHeaders(
+  base: Record<string, string>,
+  extra?: HeadersInit,
+): Record<string, string> {
+  if (!extra) return base;
+  if (extra instanceof Headers) {
+    const out = { ...base };
+    extra.forEach((v, k) => { out[k] = v; });
+    return out;
+  }
+  if (Array.isArray(extra)) {
+    const out = { ...base };
+    for (const [k, v] of extra) out[k] = v;
+    return out;
+  }
+  return { ...base, ...extra };
+}
+
 async function fetchWith401Retry(
   url: string,
   init: RequestInit & { signal?: AbortSignal },
 ): Promise<Response> {
-  const headers = await getCloudAIRequestHeaders();
+  const headers = mergeCloudAIHeaders(await getCloudAIRequestHeaders(), init.headers);
   let res = await fetch(url, { ...init, headers });
 
   if (res.status !== 401) return res;
 
   await syncAccessTokenFromSupabaseSession();
-  const retryHeaders1 = await getCloudAIRequestHeaders();
+  const retryHeaders1 = mergeCloudAIHeaders(await getCloudAIRequestHeaders(), init.headers);
   res = await fetch(url, { ...init, headers: retryHeaders1 });
   if (res.status !== 401) return res;
 
@@ -270,19 +442,21 @@ async function fetchWith401Retry(
     }
   }
 
-  const retryHeaders2 = await getCloudAIRequestHeaders();
+  const retryHeaders2 = mergeCloudAIHeaders(await getCloudAIRequestHeaders(), init.headers);
   return fetch(url, { ...init, headers: retryHeaders2 });
 }
 
 /**
- * 将服务端 ai-vision-proxy 的 401/429 统一映射到前端已有错误字符串，
- * 复用 AIAssistantPage 的冷却/每日上限 UI，无需新增 i18n key。
+ * 将服务端 ai-vision-proxy 的 401/429/502/503 统一映射到前端错误字符串，
+ * 复用 AIAssistantPage 的冷却/每日上限 UI。
  *
  * - 401 → "NOT_LOGGED_IN"
  * - 429 { error: "INTERVAL",  retry_after_seconds } → "COOLDOWN:<n>"
  * - 429 { error: "DAILY" }                         → "DAILY_LIMIT_REACHED"
  * - 429 { error: "QUEUE" }（未在 fetchWithQueueRetry 内消化完） → AI_QUEUE_TIMEOUT
  * - 429 其他                                        → "RATE_LIMITED"
+ * - 502 { error: "PROVIDER_AUTH" | "PROVIDER_CONFIG" } → AI_PROVIDER_MISCONFIGURED
+ * - 503 { error: "UPSTREAM_BUSY" }                 → UPSTREAM_BUSY
  *
  * 调用方式：若返回非 null，则抛出它；否则继续原有 !res.ok 分支。
  */
@@ -314,7 +488,149 @@ async function mapAuthOrRateLimitError(res: Response): Promise<string | null> {
     }
     return "RATE_LIMITED";
   }
+  if (res.status === 502) {
+    const data = await res.clone().json().catch(() => ({} as Record<string, unknown>));
+    const code = (data && typeof data === "object" ? (data as { error?: string }).error : "") || "";
+    if (code === "PROVIDER_AUTH" || code === "PROVIDER_CONFIG") return AI_PROVIDER_MISCONFIGURED;
+  }
+  if (res.status === 503) {
+    const data = await res.clone().json().catch(() => ({} as Record<string, unknown>));
+    const code = (data && typeof data === "object" ? (data as { error?: string }).error : "") || "";
+    if (code === "UPSTREAM_BUSY") {
+      const retry = Number((data as { retry_after_seconds?: number })?.retry_after_seconds);
+      if (Number.isFinite(retry) && retry > 0) {
+        cloudAIGuard.markServerCooldown(Math.ceil(retry));
+      }
+      return UPSTREAM_BUSY;
+    }
+  }
   return null;
+}
+
+function extractAnalysisText(data: unknown, cfgProvider: string, cfgModel: string): DeepAnalysisResult {
+  let analysisText = "";
+  if (typeof data === "string") {
+    analysisText = data;
+  } else if (data && typeof data === "object") {
+    const d = data as Record<string, unknown>;
+    if (typeof d.analysis === "string") analysisText = d.analysis;
+    else if (typeof d.text === "string") analysisText = d.text;
+    else if (typeof d.content === "string") analysisText = d.content;
+    else {
+      const choices = d.choices as { message?: { content?: string } }[] | undefined;
+      if (choices?.[0]?.message?.content) analysisText = choices[0].message.content;
+    }
+  }
+
+  if (!analysisText) {
+    console.warn("[CloudAI] Could not extract analysis text from response:", data);
+    analysisText =
+      "The cloud AI returned a response but the analysis text could not be extracted. Raw response logged to console.";
+  }
+
+  const d = (data && typeof data === "object" ? (data as Record<string, unknown>) : {}) as Record<string, unknown>;
+  return {
+    provider: (typeof d.provider === "string" ? d.provider : cfgProvider) || cfgProvider,
+    model: (typeof d.model === "string" ? d.model : cfgModel) || cfgModel,
+    analysis: analysisText,
+    confidence: typeof d.confidence === "number" ? d.confidence : undefined,
+    suggestions: Array.isArray(d.suggestions) ? (d.suggestions as string[]) : undefined,
+    timestamp: Date.now(),
+  };
+}
+
+function extractReplyText(data: unknown): string {
+  if (typeof data === "string") return data;
+  if (data && typeof data === "object") {
+    const d = data as Record<string, unknown>;
+    if (typeof d.analysis === "string") return d.analysis;
+    if (typeof d.text === "string") return d.text;
+    if (typeof d.content === "string") return d.content;
+    if (typeof d.reply === "string") return d.reply;
+    const choices = d.choices as { message?: { content?: string } }[] | undefined;
+    if (choices?.[0]?.message?.content) return choices[0].message.content;
+    const output = d.output as { text?: string } | undefined;
+    if (output?.text) return output.text;
+  }
+  return JSON.stringify(data);
+}
+
+async function readCloudAiSse(
+  res: Response,
+  onDelta?: (delta: string) => void,
+): Promise<unknown> {
+  if (!res.body) throw new Error(AI_NETWORK);
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  let analysis = "";
+  let meta: Record<string, unknown> = {};
+  const deadline = Date.now() + 90_000;
+  while (true) {
+    if (Date.now() > deadline) throw new Error(AI_TIMEOUT);
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const lines = buf.split("\n");
+    buf = lines.pop() ?? "";
+    for (const line of lines) {
+      const t = line.trim();
+      if (!t.startsWith("data:")) continue;
+      const payload = t.slice(5).trim();
+      if (!payload) continue;
+      let data: Record<string, unknown>;
+      try {
+        data = JSON.parse(payload) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+      if (typeof data.error === "string" && data.error) throw new Error(data.error);
+      if (typeof data.delta === "string" && data.delta) {
+        analysis += data.delta;
+        onDelta?.(data.delta);
+      }
+      if (data.done === true) {
+        if (typeof data.analysis === "string") analysis = data.analysis;
+        meta = data;
+      }
+    }
+  }
+  return { ...meta, analysis: (typeof meta.analysis === "string" ? meta.analysis : analysis) };
+}
+
+async function postCloudAI(
+  endpoint: string,
+  body: Record<string, unknown>,
+  attemptTimeoutMs: number,
+  onQueueWait: CloudAIQueueWaitHandler | null,
+  externalSignal?: AbortSignal,
+  onDelta?: (delta: string) => void,
+): Promise<unknown> {
+  const res = await fetchWithQueueRetry(
+    endpoint,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+      headers: { Accept: "text/event-stream" },
+    },
+    { attemptTimeoutMs, externalSignal, onQueueWait },
+  );
+
+  if (!res.ok) {
+    const mapped = await mapAuthOrRateLimitError(res);
+    if (mapped) throw new Error(mapped);
+    const err = await res.json().catch(() => ({ error: "Unknown error" }));
+    const msg =
+      (err && typeof err === "object" && ((err as { error?: string }).error || (err as { message?: string }).message)) ||
+      `Server responded with ${res.status}`;
+    throw new Error(String(msg));
+  }
+
+  const ct = res.headers.get("content-type") || "";
+  if (ct.includes("text/event-stream")) {
+    return readCloudAiSse(res, onDelta);
+  }
+  return res.json();
 }
 
 // ---- MOCK analysis (for demo when no backend) ----
@@ -418,6 +734,24 @@ class CloudAIService {
   /** Optional UI hook while waiting for a global AI queue slot (429 QUEUE retries). */
   onQueueWait: CloudAIQueueWaitHandler | null = null;
 
+  private inFlightAbort: AbortController | null = null;
+
+  /** Cancel the current cloud AI HTTP request (reset / unmount). */
+  abortInFlight(): void {
+    this.inFlightAbort?.abort();
+    this.inFlightAbort = null;
+  }
+
+  private beginInFlight(): AbortSignal {
+    this.abortInFlight();
+    this.inFlightAbort = new AbortController();
+    return this.inFlightAbort.signal;
+  }
+
+  private endInFlight(): void {
+    this.inFlightAbort = null;
+  }
+
   /** Check if deep analysis feature is available (configured + enabled) */
   get isAvailable(): boolean {
     const cfg = getCloudAIConfig();
@@ -449,6 +783,7 @@ class CloudAIService {
     detections: { className: string; score: number }[],
     uiLanguage?: string,
     extras?: AIRequestExtras,
+    onDelta?: (delta: string) => void,
   ): Promise<DeepAnalysisResult> {
     const cfg = getCloudAIConfig();
     if (!cfg.enabled) {
@@ -471,7 +806,7 @@ class CloudAIService {
     const compressedImage = await prepareImageForCloudAI(imageBase64);
 
     // ---- Dedup Cache Check ----
-    const cachedResultJson = await cloudAIGuard.checkDedup(compressedImage, uiLanguage);
+    const { result: cachedResultJson, hash: dedupHash } = await cloudAIGuard.checkDedup(compressedImage, uiLanguage);
     if (cachedResultJson) {
       console.log('[CloudAI] Returning cached dedup result');
       const cached = JSON.parse(cachedResultJson) as DeepAnalysisResult;
@@ -481,98 +816,36 @@ class CloudAIService {
 
     if (endpoint) {
       await ensureCloudAIBackendAuth();
-      // ---- Real Backend Proxy Call ----
       console.log(`[CloudAI] POST ${endpoint}`);
+      const signal = this.beginInFlight();
       try {
-        // Add timeout to prevent hanging requests
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout
-
-        const res = await fetchWithQueueRetry(
+        const data = await postCloudAI(
           endpoint,
           {
-            method: "POST",
-            signal: controller.signal,
-            body: JSON.stringify({
-              image: compressedImage,
-              detections: detections.map((d) => ({
-                className: d.className,
-                score: d.score,
-              })),
-              modelId: cfg.modelId,
-              maxTokens: cfg.maxTokens,
-              ...(uiLanguage?.trim() ? { uiLanguage: uiLanguage.trim() } : {}),
-              ...extrasToBody(extras),
-            }),
+            image: compressedImage,
+            detections: detections.map((d) => ({
+              className: d.className,
+              score: d.score,
+            })),
+            maxTokens: cfg.maxTokens,
+            ...(uiLanguage?.trim() ? { uiLanguage: uiLanguage.trim() } : {}),
+            ...extrasToBody(extras),
           },
+          60_000,
           this.onQueueWait,
+          signal,
+          onDelta,
         );
-        clearTimeout(timeoutId);
 
-        if (!res.ok) {
-          const mapped = await mapAuthOrRateLimitError(res);
-          if (mapped) throw new Error(mapped);
-          const err = await res.json().catch(() => ({ error: "Unknown error" }));
-          throw new Error(err.error || err.message || `Server responded with ${res.status}`);
-        }
-
-        const data = await res.json();
-
-        // Robust response parsing: handle multiple AI provider response formats
-        // Edge Function should normalize, but we handle common variants as fallback
-        let analysisText = "";
-        if (typeof data === "string") {
-          // Edge Function returned raw string
-          analysisText = data;
-        } else if (data.analysis) {
-          analysisText = data.analysis;
-        } else if (data.text) {
-          analysisText = data.text;
-        } else if (data.content) {
-          analysisText = data.content;
-        } else if (data.result) {
-          // Some providers wrap in .result
-          analysisText = typeof data.result === "string" ? data.result : JSON.stringify(data.result);
-        } else if (data.choices?.[0]?.message?.content) {
-          // OpenAI-compatible format (if Edge Function passes through)
-          analysisText = data.choices[0].message.content;
-        } else if (data.output?.text) {
-          // Qwen / DashScope format
-          analysisText = data.output.text;
-        } else if (data.candidates?.[0]?.content?.parts?.[0]?.text) {
-          // Gemini format
-          analysisText = data.candidates[0].content.parts[0].text;
-        }
-
-        if (!analysisText) {
-          console.warn("[CloudAI] Could not extract analysis text from response:", data);
-          analysisText = "The cloud AI returned a response but the analysis text could not be extracted. Raw response logged to console.";
-        }
-
-        const result: DeepAnalysisResult = {
-          provider: data.provider || cfg.providerName,
-          model: data.model || cfg.modelId,
-          analysis: analysisText,
-          confidence: data.confidence,
-          suggestions: data.suggestions,
-          timestamp: Date.now(),
-        };
-
-        // Record usage and cache result
+        const result = extractAnalysisText(data, cfg.providerName, cfg.modelId);
         cloudAIGuard.recordCall();
-        await cloudAIGuard.cacheResult(compressedImage, JSON.stringify(result), uiLanguage);
-
+        await cloudAIGuard.cacheResult(compressedImage, JSON.stringify(result), uiLanguage, dedupHash);
         return result;
-      } catch (error: any) {
+      } catch (error: unknown) {
         console.error("[CloudAI] Backend call failed:", error);
-        // Provide user-friendly error messages
-        if (error?.name === 'AbortError') {
-          throw new Error('Request timed out (60s). The cloud AI service may be overloaded. Please try again later.');
-        }
-        if (error?.message?.includes('Failed to fetch') || error?.message?.includes('NetworkError')) {
-          throw new Error('Network error. Please check your internet connection and try again.');
-        }
-        throw error;
+        throw mapFetchFailure(error, signal);
+      } finally {
+        this.endInFlight();
       }
     }
 
@@ -584,7 +857,7 @@ class CloudAIService {
 
     // Record usage and cache even for mock
     cloudAIGuard.recordCall();
-    await cloudAIGuard.cacheResult(compressedImage, JSON.stringify(mockResult), uiLanguage);
+    await cloudAIGuard.cacheResult(compressedImage, JSON.stringify(mockResult), uiLanguage, dedupHash);
 
     return mockResult;
   }
@@ -601,6 +874,7 @@ class CloudAIService {
     previousAnalysis: string,
     uiLanguage?: string,
     extras?: AIRequestExtras,
+    onDelta?: (delta: string) => void,
   ): Promise<string> {
     const cfg = getCloudAIConfig();
     if (!cfg.enabled) {
@@ -620,59 +894,31 @@ class CloudAIService {
 
     if (endpoint) {
       await ensureCloudAIBackendAuth();
-      // ---- Real Backend Proxy Call ----
       console.log(`[CloudAI] Follow-up POST ${endpoint}`);
+      const signal = this.beginInFlight();
       try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 60000);
-
-        const res = await fetchWithQueueRetry(
+        const data = await postCloudAI(
           endpoint,
           {
-            method: "POST",
-            signal: controller.signal,
-            body: JSON.stringify({
-              followUp: true,
-              userMessage,
-              previousAnalysis,
-              modelId: cfg.modelId,
-              maxTokens: cfg.maxTokens,
-              ...(uiLanguage?.trim() ? { uiLanguage: uiLanguage.trim() } : {}),
-              ...extrasToBody(extras),
-            }),
+            followUp: true,
+            userMessage,
+            previousAnalysis,
+            maxTokens: cfg.maxTokens,
+            ...(uiLanguage?.trim() ? { uiLanguage: uiLanguage.trim() } : {}),
+            ...extrasToBody(extras),
           },
+          60_000,
           this.onQueueWait,
+          signal,
+          onDelta,
         );
-        clearTimeout(timeoutId);
-
-        if (!res.ok) {
-          const mapped = await mapAuthOrRateLimitError(res);
-          if (mapped) throw new Error(mapped);
-          const err = await res.json().catch(() => ({ error: "Unknown error" }));
-          throw new Error(err.error || err.message || `Server responded with ${res.status}`);
-        }
-
-        const data = await res.json();
-        let replyText = "";
-        if (typeof data === "string") replyText = data;
-        else if (data.analysis) replyText = data.analysis;
-        else if (data.text) replyText = data.text;
-        else if (data.content) replyText = data.content;
-        else if (data.choices?.[0]?.message?.content) replyText = data.choices[0].message.content;
-        else if (data.output?.text) replyText = data.output.text;
-        else replyText = JSON.stringify(data);
-
         cloudAIGuard.recordCall();
-        return replyText;
-      } catch (error: any) {
+        return extractReplyText(data);
+      } catch (error: unknown) {
         console.error("[CloudAI] Follow-up call failed:", error);
-        if (error?.name === 'AbortError') {
-          throw new Error('Request timed out (60s). Please try again later.');
-        }
-        if (error?.message?.includes('Failed to fetch') || error?.message?.includes('NetworkError')) {
-          throw new Error('Network error. Please check your internet connection.');
-        }
-        throw error;
+        throw mapFetchFailure(error, signal);
+      } finally {
+        this.endInFlight();
       }
     }
 
@@ -693,6 +939,7 @@ class CloudAIService {
     previousAnalysis: string,
     uiLanguage?: string,
     extras?: AIRequestExtras,
+    onDelta?: (delta: string) => void,
   ): Promise<string> {
     const cfg = getCloudAIConfig();
     if (!cfg.enabled) {
@@ -715,58 +962,31 @@ class CloudAIService {
     if (endpoint) {
       await ensureCloudAIBackendAuth();
       console.log(`[CloudAI] Follow-up with image POST ${endpoint}`);
+      const signal = this.beginInFlight();
       try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 60000);
-
-        const res = await fetchWithQueueRetry(
+        const data = await postCloudAI(
           endpoint,
           {
-            method: "POST",
-            signal: controller.signal,
-            body: JSON.stringify({
-              followUp: true,
-              image: compressedImage,
-              userMessage,
-              previousAnalysis,
-              modelId: cfg.modelId,
-              maxTokens: cfg.maxTokens,
-              ...(uiLanguage?.trim() ? { uiLanguage: uiLanguage.trim() } : {}),
-              ...extrasToBody(extras),
-            }),
+            followUp: true,
+            image: compressedImage,
+            userMessage,
+            previousAnalysis,
+            maxTokens: cfg.maxTokens,
+            ...(uiLanguage?.trim() ? { uiLanguage: uiLanguage.trim() } : {}),
+            ...extrasToBody(extras),
           },
+          60_000,
           this.onQueueWait,
+          signal,
+          onDelta,
         );
-        clearTimeout(timeoutId);
-
-        if (!res.ok) {
-          const mapped = await mapAuthOrRateLimitError(res);
-          if (mapped) throw new Error(mapped);
-          const err = await res.json().catch(() => ({ error: "Unknown error" }));
-          throw new Error(err.error || err.message || `Server responded with ${res.status}`);
-        }
-
-        const data = await res.json();
-        let replyText = "";
-        if (typeof data === "string") replyText = data;
-        else if (data.analysis) replyText = data.analysis;
-        else if (data.text) replyText = data.text;
-        else if (data.content) replyText = data.content;
-        else if (data.choices?.[0]?.message?.content) replyText = data.choices[0].message.content;
-        else if (data.output?.text) replyText = data.output.text;
-        else replyText = JSON.stringify(data);
-
         cloudAIGuard.recordCall();
-        return replyText;
-      } catch (error: any) {
+        return extractReplyText(data);
+      } catch (error: unknown) {
         console.error("[CloudAI] Follow-up with image failed:", error);
-        if (error?.name === 'AbortError') {
-          throw new Error('Request timed out (60s). Please try again later.');
-        }
-        if (error?.message?.includes('Failed to fetch') || error?.message?.includes('NetworkError')) {
-          throw new Error('Network error. Please check your internet connection.');
-        }
-        throw error;
+        throw mapFetchFailure(error, signal);
+      } finally {
+        this.endInFlight();
       }
     }
 
@@ -798,6 +1018,7 @@ class CloudAIService {
     previousAnalysis: string,
     uiLanguage?: string,
     extras?: AIRequestExtras,
+    onDelta?: (delta: string) => void,
   ): Promise<string> {
     const cfg = getCloudAIConfig();
     if (!cfg.enabled) {
@@ -817,65 +1038,37 @@ class CloudAIService {
 
     if (endpoint) {
       await ensureCloudAIBackendAuth();
-      // ---- Real Backend Proxy Call ----
       console.log(`[CloudAI] Voice follow-up POST ${endpoint} (audio size: ${Math.round(audioBase64.length / 1024)}KB)`);
+      const signal = this.beginInFlight();
       try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 90000); // 90s for voice (STT takes longer)
-
-        const res = await fetchWithQueueRetry(
+        const data = (await postCloudAI(
           endpoint,
           {
-            method: "POST",
-            signal: controller.signal,
-            body: JSON.stringify({
-              voiceFollowUp: true,
-              audio: audioBase64,
-              previousAnalysis,
-              modelId: cfg.modelId,
-              maxTokens: cfg.maxTokens,
-              ...(uiLanguage?.trim() ? { uiLanguage: uiLanguage.trim() } : {}),
-              ...extrasToBody(extras),
-            }),
+            voiceFollowUp: true,
+            audio: audioBase64,
+            previousAnalysis,
+            maxTokens: cfg.maxTokens,
+            ...(uiLanguage?.trim() ? { uiLanguage: uiLanguage.trim() } : {}),
+            ...extrasToBody(extras),
           },
+          90_000,
           this.onQueueWait,
-        );
-        clearTimeout(timeoutId);
+          signal,
+          onDelta,
+        )) as Record<string, unknown>;
 
-        if (!res.ok) {
-          const mapped = await mapAuthOrRateLimitError(res);
-          if (mapped) throw new Error(mapped);
-          const err = await res.json().catch(() => ({ error: "Unknown error" }));
-          throw new Error(err.error || err.message || `Server responded with ${res.status}`);
-        }
-
-        const data = await res.json();
-        let replyText = "";
-        if (typeof data === "string") replyText = data;
-        else if (data.analysis) replyText = data.analysis;
-        else if (data.text) replyText = data.text;
-        else if (data.content) replyText = data.content;
-        else if (data.reply) replyText = data.reply;
-        else if (data.choices?.[0]?.message?.content) replyText = data.choices[0].message.content;
-        else if (data.output?.text) replyText = data.output.text;
-        else replyText = JSON.stringify(data);
-
-        // If server also returns the transcribed text, prepend it
-        if (data.transcription) {
+        let replyText = extractReplyText(data);
+        if (typeof data.transcription === "string" && data.transcription) {
           replyText = `> 🗣️ "${data.transcription}"\n\n${replyText}`;
         }
 
         cloudAIGuard.recordCall();
         return replyText;
-      } catch (error: any) {
+      } catch (error: unknown) {
         console.error("[CloudAI] Voice follow-up call failed:", error);
-        if (error?.name === 'AbortError') {
-          throw new Error('Voice request timed out (90s). Please try again later.');
-        }
-        if (error?.message?.includes('Failed to fetch') || error?.message?.includes('NetworkError')) {
-          throw new Error('Network error. Please check your internet connection.');
-        }
-        throw error;
+        throw mapFetchFailure(error, signal);
+      } finally {
+        this.endInFlight();
       }
     }
 

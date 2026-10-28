@@ -7,6 +7,9 @@
 // without re-scanning the store's QR.
 // ============================================================================
 
+import { CONFIG_STORAGE_KEY } from "../constants";
+import { ensureEdgeSessionReady, getAccessToken } from "../utils/auth";
+import { storageGet } from "../utils/safeStorage";
 import { getSupabaseBrowserClient } from "../utils/supabaseBrowser";
 
 export interface FarmerBinding {
@@ -106,6 +109,39 @@ export async function listMyBindings(): Promise<FarmerBinding[]> {
       createdAt: r.created_at,
     };
   });
+}
+
+/** GET /messages limit=1 — 403 means local chatContact is stale. */
+export async function verifyChannelReadAccess(
+  channelId: string,
+): Promise<"ok" | "forbidden" | "error"> {
+  const cid = channelId.trim();
+  if (!cid) return "error";
+  try {
+    const saved = storageGet(CONFIG_STORAGE_KEY);
+    const parsed = saved ? (JSON.parse(saved) as { backendProxyConfig?: { supabaseUrl?: string; supabaseAnonKey?: string } }) : {};
+    const bpc = parsed.backendProxyConfig;
+    const base = (bpc?.supabaseUrl || import.meta.env.VITE_SUPABASE_URL || "")
+      .trim()
+      .replace(/\/+$/, "");
+    const anon = (bpc?.supabaseAnonKey || import.meta.env.VITE_SUPABASE_ANON_KEY || "").trim();
+    if (!base || !anon) return "error";
+    await ensureEdgeSessionReady();
+    const token = getAccessToken()?.trim();
+    const authHeader = token ? `Bearer ${token}` : `Bearer ${anon}`;
+    const res = await fetch(
+      `${base}/functions/v1/chat-supabase/messages?channel_id=${encodeURIComponent(cid)}&limit=1`,
+      {
+        method: "GET",
+        headers: { "Content-Type": "application/json", apikey: anon, Authorization: authHeader },
+      },
+    );
+    if (res.status === 403) return "forbidden";
+    if (!res.ok) return "error";
+    return "ok";
+  } catch {
+    return "error";
+  }
 }
 
 /** Most recent binding (for auto-restoring chatContact on login). */

@@ -8,26 +8,35 @@ import { BackgroundSync } from "./BackgroundSync";
 import { useLanguage, languages, Language } from "../hooks/useLanguage";
 import { SecondaryView } from "./SecondaryView";
 import { useConfigContext } from "../hooks/ConfigProvider";
-import { isUserLoggedIn, logoutUser } from "../utils/auth";
+import { logoutUser } from "../utils/auth";
+import { useAuthFlag } from "../hooks/useAuthFlag";
+import { isDeveloperMode } from "../utils/developerMode";
 import { PROFILE_GATE_DISMISSED_SESSION_KEY } from "../constants";
 import { armProfileGateSkipAutoOnce } from "../utils/profileGateSkip";
 import { sanitizeRichHtml } from "../utils/sanitizeRichHtml";
 import { useContentSuperAdmin } from "../hooks/useContentSuperAdmin";
+import { canOpenConfigManager } from "../utils/canOpenConfigManager";
 
 export function SettingsPage() {
   const navigate = useNavigate();
   const { language, setLanguage, t } = useLanguage();
   const { config } = useConfigContext();
-  const [showPushSettings, setShowPushSettings] = useState(false);
-  const [showSyncSettings, setShowSyncSettings] = useState(false);
-  const [showPermissionsSettings, setShowPermissionsSettings] = useState(false);
-  const [showAccountManagement, setShowAccountManagement] = useState(false);
-  const [showLanguageSelector, setShowLanguageSelector] = useState(false);
-  const [showPrivacyPolicy, setShowPrivacyPolicy] = useState(false);
-  const [showTermsOfService, setShowTermsOfService] = useState(false);
-  const [showTechnicalSupport, setShowTechnicalSupport] = useState(false);
-  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
-  const loggedIn = isUserLoggedIn();
+  type SettingsPanel =
+    | "none"
+    | "push"
+    | "sync"
+    | "permissions"
+    | "account"
+    | "language"
+    | "privacy"
+    | "terms"
+    | "support"
+    | "logout";
+  const [activePanel, setActivePanel] = useState<SettingsPanel>("none");
+  const togglePanel = (panel: SettingsPanel) =>
+    setActivePanel((cur) => (cur === panel ? "none" : panel));
+  const closePanel = () => setActivePanel("none");
+  const loggedIn = useAuthFlag();
   const { contentRole, loading: contentAdminLoading } = useContentSuperAdmin();
 
   const safePrivacyHtml = useMemo(
@@ -43,10 +52,11 @@ export function SettingsPage() {
     [config?.technicalSupport?.content, t.settings.technicalSupportText],
   );
 
-  /** 内容管理：Supabase 登录且 content_role IN ('admin','editor')（npm run dev 跳过角色检查） */
-  const showConfigManager =
-    import.meta.env.DEV ||
-    (loggedIn && !contentAdminLoading && (contentRole === 'admin' || contentRole === 'editor'));
+  const showConfigManager = canOpenConfigManager({
+    loggedIn,
+    contentRole,
+    loading: contentAdminLoading,
+  });
 
   // 进入动画
   const [animPhase, setAnimPhase] = useState<'entering' | 'visible'>('entering');
@@ -55,27 +65,41 @@ export function SettingsPage() {
     return () => cancelAnimationFrame(raf);
   }, []);
 
+  useEffect(() => {
+    if (activePanel !== "logout") return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closePanel();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [activePanel]);
+
   const settingsSections = [
     {
       title: t.settings.advancedFeatures,
       items: [
         {
+          id: "push",
           icon: Bell,
           label: t.settings.pushNotifications,
           description: t.settings.pushNotificationsDesc,
           color: "text-emerald-600",
-          action: () => setShowPushSettings(!showPushSettings),
-          expanded: showPushSettings,
+          action: () => togglePanel("push"),
+          expanded: activePanel === "push",
         },
         {
+          id: "sync",
           icon: RefreshCw,
           label: t.settings.backgroundSync,
           description: t.settings.backgroundSyncDesc,
           color: "text-blue-600",
-          action: () => setShowSyncSettings(!showSyncSettings),
-          expanded: showSyncSettings,
+          action: () => togglePanel("sync"),
+          expanded: activePanel === "sync",
+          // 队列目前无业务写入方，投递的 /api/* 端点也不存在：仅开发模式展示
+          visible: isDeveloperMode(),
         },
         {
+          id: "configManager",
           icon: FileText,
           label: t.settings.configManager,
           description: t.settings.configManagerDesc,
@@ -89,19 +113,21 @@ export function SettingsPage() {
       title: t.settings.generalSettings,
       items: [
         {
+          id: "language",
           icon: Globe,
           label: t.settings.language,
           description: languages[language].nativeName,
           color: "text-purple-600",
-          action: () => setShowLanguageSelector(true),
+          action: () => togglePanel("language"),
         },
         {
+          id: "permissions",
           icon: ShieldCheck,
           label: t.settings.permissions,
           description: t.settings.permissionsDesc,
           color: "text-emerald-600",
-          action: () => setShowPermissionsSettings(!showPermissionsSettings),
-          expanded: showPermissionsSettings,
+          action: () => togglePanel("permissions"),
+          expanded: activePanel === "permissions",
         },
       ],
     },
@@ -109,35 +135,39 @@ export function SettingsPage() {
       title: t.settings.privacy,
       items: [
         {
+          id: "privacy",
           icon: Shield,
           label: t.settings.privacyPolicy,
           description: t.settings.privacyPolicyDesc,
           color: "text-orange-600",
-          action: () => setShowPrivacyPolicy(true),
+          action: () => togglePanel("privacy"),
         },
         {
+          id: "account",
           icon: UserX,
           label: t.settings.accountManagement,
           description: t.settings.accountManagementDesc,
           color: "text-red-600",
-          action: () => setShowAccountManagement(!showAccountManagement),
-          expanded: showAccountManagement,
+          action: () => togglePanel("account"),
+          expanded: activePanel === "account",
           visible: loggedIn,
           expandedMaxClass: "max-h-[36rem]",
         },
         {
+          id: "terms",
           icon: Info,
           label: t.settings.termsOfService,
           description: t.settings.termsOfServiceDesc,
           color: "text-gray-600",
-          action: () => setShowTermsOfService(true),
+          action: () => togglePanel("terms"),
         },
         {
+          id: "support",
           icon: Headphones,
           label: t.settings.technicalSupport,
           description: t.settings.technicalSupportDesc,
           color: "text-teal-600",
-          action: () => setShowTechnicalSupport(true),
+          action: () => togglePanel("support"),
         },
       ],
     },
@@ -187,10 +217,10 @@ export function SettingsPage() {
 
             {/* 设置项卡片 */}
             <div className="bg-white rounded-2xl overflow-hidden shadow-sm">
-              {section.items.filter(item => item.visible !== false).map((item, itemIndex) => {
+              {section.items.filter(item => item.visible !== false).map((item, itemIndex, visibleItems) => {
                 const Icon = item.icon;
                 return (
-                  <div key={itemIndex}>
+                  <div key={item.id}>
                     <button
                       onClick={item.action}
                       className="w-full px-4 py-3.5 flex items-center justify-between active:bg-emerald-100 transition-colors duration-150"
@@ -225,16 +255,16 @@ export function SettingsPage() {
                     }`}>
                       <div className="px-4 pb-4 bg-gray-50">
                         <div className="pt-3">
-                          {item.label === t.settings.pushNotifications && <PushNotifications />}
-                          {item.label === t.settings.backgroundSync && <BackgroundSync />}
-                          {item.label === t.settings.permissions && <PermissionsSettingsPanel />}
-                          {item.label === t.settings.accountManagement && <AccountManagementPanel />}
+                          {item.expanded && item.id === "push" && <PushNotifications />}
+                          {item.expanded && item.id === "sync" && <BackgroundSync />}
+                          {item.expanded && item.id === "permissions" && <PermissionsSettingsPanel />}
+                          {item.expanded && item.id === "account" && <AccountManagementPanel />}
                         </div>
                       </div>
                     </div>
 
                     {/* 分隔线 */}
-                    {itemIndex < section.items.length - 1 && !item.expanded && (
+                    {itemIndex < visibleItems.length - 1 && !item.expanded && (
                       <div className="mx-4" style={{ height: '1px', background: 'linear-gradient(to right, transparent, rgba(0,0,0,0.06), transparent)' }}></div>
                     )}
                   </div>
@@ -249,7 +279,7 @@ export function SettingsPage() {
       {loggedIn && (
         <div className="px-4 mt-4 pb-8">
           <button
-            onClick={() => setShowLogoutConfirm(true)}
+            onClick={() => setActivePanel("logout")}
             className="w-full bg-white text-gray-400 py-3 rounded-2xl active:bg-gray-50 transition-colors duration-150 text-sm shadow-sm"
           >
             {t.profile.logout}
@@ -262,15 +292,18 @@ export function SettingsPage() {
       </div>
 
       {/* 退出登录确认弹窗 */}
-      {showLogoutConfirm && (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center px-8" onClick={() => setShowLogoutConfirm(false)}>
+      {activePanel === "logout" && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center px-8" onClick={closePanel}>
           <div className="absolute inset-0 bg-black/40" />
           <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="settings-logout-title"
             className="relative bg-white rounded-3xl p-6 w-full max-w-sm shadow-2xl"
             onClick={(e) => e.stopPropagation()}
             style={{ animation: 'fadeScaleIn 200ms ease-out' }}
           >
-            <h3 className="text-lg font-semibold text-gray-900 text-center mb-2">
+            <h3 id="settings-logout-title" className="text-lg font-semibold text-gray-900 text-center mb-2">
               {t.profile.logoutConfirm || "Logout"}
             </h3>
             <p className="text-sm text-gray-500 text-center mb-6">
@@ -278,7 +311,7 @@ export function SettingsPage() {
             </p>
             <div className="flex gap-3">
               <button
-                onClick={() => setShowLogoutConfirm(false)}
+                onClick={closePanel}
                 className="flex-1 py-3 rounded-2xl bg-gray-100 text-gray-600 text-sm font-medium active:bg-gray-200 transition-colors"
               >
                 {t.common.cancel}
@@ -286,7 +319,7 @@ export function SettingsPage() {
               <button
                 onClick={() => {
                   void (async () => {
-                    setShowLogoutConfirm(false);
+                    closePanel();
                     try {
                       await logoutUser();
                     } catch {
@@ -310,10 +343,10 @@ export function SettingsPage() {
       )}
 
       {/* 语言选择器 - 浮现弹出 */}
-      {showLanguageSelector && (
+      {activePanel === "language" && (
         <SecondaryView 
           title={t.settings.language} 
-          onClose={() => setShowLanguageSelector(false)}
+          onClose={closePanel}
           showTitle={true}
         >
           <div className="p-4 space-y-2">
@@ -323,7 +356,7 @@ export function SettingsPage() {
                 key={code}
                 onClick={() => {
                   setLanguage(code as Language);
-                  setTimeout(() => setShowLanguageSelector(false), 300);
+                  setTimeout(closePanel, 300);
                 }}
                 className={`w-full p-4 rounded-xl flex items-center justify-between transition-all duration-200 ${
                   language === code
@@ -351,52 +384,65 @@ export function SettingsPage() {
       )}
 
       {/* 私政策 - 浮现弹出 */}
-      {showPrivacyPolicy && (
+      {activePanel === "privacy" && (
         <SecondaryView 
           title={config?.privacyPolicy?.title || t.settings.privacyPolicy} 
-          onClose={() => setShowPrivacyPolicy(false)}
+          onClose={closePanel}
           showTitle={true}
         >
           <div className="p-4 pb-8">
             <div className="bg-white rounded-2xl p-5 shadow-sm">
-              <div className="text-sm text-gray-700 leading-relaxed rich-content max-h-[60vh] overflow-y-auto" dangerouslySetInnerHTML={{ __html: safePrivacyHtml }} />
+              <LegalBody raw={config?.privacyPolicy?.content || t.settings.privacyPolicyText} html={safePrivacyHtml} />
             </div>
           </div>
         </SecondaryView>
       )}
 
       {/* 服务款 - 浮现弹出 */}
-      {showTermsOfService && (
+      {activePanel === "terms" && (
         <SecondaryView 
           title={config?.termsOfService?.title || t.settings.termsOfService} 
-          onClose={() => setShowTermsOfService(false)}
+          onClose={closePanel}
           showTitle={true}
         >
           <div className="p-4 pb-8">
             <div className="bg-white rounded-2xl p-5 shadow-sm">
-              <div className="text-sm text-gray-700 leading-relaxed rich-content max-h-[60vh] overflow-y-auto" dangerouslySetInnerHTML={{ __html: safeTermsHtml }} />
+              <LegalBody raw={config?.termsOfService?.content || t.settings.termsOfServiceText} html={safeTermsHtml} />
             </div>
           </div>
         </SecondaryView>
       )}
 
-      {showTechnicalSupport && (
+      {activePanel === "support" && (
         <SecondaryView
           title={config?.technicalSupport?.title || t.settings.technicalSupport}
-          onClose={() => setShowTechnicalSupport(false)}
+          onClose={closePanel}
           showTitle={true}
         >
           <div className="p-4 pb-8">
             <div className="bg-white rounded-2xl p-5 shadow-sm">
-              <div
-                className="text-sm text-gray-700 leading-relaxed rich-content max-h-[60vh] overflow-y-auto"
-                dangerouslySetInnerHTML={{ __html: safeSupportHtml }}
-              />
+              <LegalBody raw={config?.technicalSupport?.content || t.settings.technicalSupportText} html={safeSupportHtml} />
             </div>
           </div>
         </SecondaryView>
       )}
     </div>
+  );
+}
+
+function LegalBody({ raw, html }: { raw: string; html: string }) {
+  if (!/<[a-z][\s\S]*>/i.test(raw || "")) {
+    return (
+      <div className="text-sm text-gray-700 leading-relaxed whitespace-pre-line max-h-[60vh] overflow-y-auto">
+        {raw}
+      </div>
+    );
+  }
+  return (
+    <div
+      className="text-sm text-gray-700 leading-relaxed rich-content max-h-[60vh] overflow-y-auto"
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
   );
 }
 

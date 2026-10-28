@@ -57,6 +57,7 @@ export function BannerDetailPage({ onClose, bannerIndex, bannerData }: BannerDet
                 <CmsMediaImg
                   src={heroImage}
                   alt={latestBanner?.alt || title}
+                  loading="eager"
                   className="absolute inset-0 h-full w-full object-fill"
                 />
               ) : null}

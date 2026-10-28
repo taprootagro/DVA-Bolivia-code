@@ -15,7 +15,7 @@
 //   - openai     → OpenAI-compatible (GPT-4o, etc.)
 //
 // Request Types (determined by body fields):
-//   1. Image analysis:   { image, detections, modelId, maxTokens, uiLanguage? } — system prompt from app_config (cached), not client body
+//   1. Image analysis:   { image, detections, uiLanguage? } — systemPrompt / modelId / maxTokens from app_config (cached), not client body
 //   2. Text follow-up:   { followUp: true, userMessage, previousAnalysis, ... }
 //   2b. Image follow-up: { followUp: true, image, userMessage, previousAnalysis, ... }
 //   3. Voice follow-up:  { voiceFollowUp: true, audio, previousAnalysis, ... }
@@ -29,7 +29,9 @@
 //   AI_PROVIDER    — Provider name: qwen | gemini | openai  (default: qwen)
 //   AI_API_KEY     — API key for the selected provider
 //   AI_BASE_URL    — (Optional) Custom API base URL (for self-hosted / proxy)
-//   AI_MODEL_ID    — (Optional) Default model ID override
+//   AI_MODEL_ID    — (Optional) Model ID override (wins over app_config.cloudAIConfig.modelId)
+//   AI_MODEL_ALLOWLIST — (Optional) Comma list; client modelId is ignored unless listed here,
+//                        and app_config.modelId must also be listed when this is set
 //
 // Rate limits — optional overrides if app_config.cloudAIConfig is missing a field:
 //   AI_RL_INTERVAL_SEC   — Min seconds between AI calls (default: 10)
@@ -64,7 +66,7 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   "Access-Control-Allow-Headers":
-    "Content-Type, Authorization, apikey, x-client-info",
+    "Content-Type, Authorization, apikey, x-client-info, Accept",
 };
 
 function json(data: unknown, status = 200): Response {
@@ -150,29 +152,49 @@ interface AIConfig {
   modelId: string;
 }
 
-function getAIConfig(requestModelId?: string): AIConfig {
+function modelAllowlist(): string[] {
+  const raw = (Deno.env.get("AI_MODEL_ALLOWLIST") || "").trim();
+  if (!raw) return [];
+  return raw.split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+/** Client-supplied modelId is honored only when ops list it in AI_MODEL_ALLOWLIST (empty list = never). */
+function isClientModelIdAllowed(modelId: unknown): boolean {
+  if (typeof modelId !== "string" || !modelId.trim()) return false;
+  return modelAllowlist().includes(modelId.trim());
+}
+
+const DEFAULT_BASE_URLS: Record<AIProvider, string> = {
+  qwen: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+  gemini: "https://generativelanguage.googleapis.com/v1beta",
+  openai: "https://api.openai.com/v1",
+};
+
+const DEFAULT_MODELS: Record<AIProvider, string> = {
+  qwen: "qwen-vl-plus",
+  gemini: "gemini-2.0-flash",
+  openai: "gpt-4o",
+};
+
+/** AI_MODEL_ID > app_config modelId > allowlisted client modelId > provider default. */
+function resolveModelId(provider: AIProvider, cloudModelId: string, requestModelId?: unknown): string {
+  const envModel = (Deno.env.get("AI_MODEL_ID") || "").trim();
+  if (envModel) return envModel;
+  const list = modelAllowlist();
+  if (cloudModelId && (list.length === 0 || list.includes(cloudModelId))) return cloudModelId;
+  if (isClientModelIdAllowed(requestModelId)) return (requestModelId as string).trim();
+  const fallback = DEFAULT_MODELS[provider] || DEFAULT_MODELS.qwen;
+  if (list.length > 0 && !list.includes(fallback)) return list[0];
+  return fallback;
+}
+
+function getAIConfig(cloudModelId = "", requestModelId?: unknown): AIConfig {
   const provider = (Deno.env.get("AI_PROVIDER") || "qwen") as AIProvider;
-  const apiKey = Deno.env.get("AI_API_KEY") || "";
-
-  // Default base URLs per provider
-  const defaultBaseUrls: Record<AIProvider, string> = {
-    qwen: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    gemini: "https://generativelanguage.googleapis.com/v1beta",
-    openai: "https://api.openai.com/v1",
-  };
-
-  // Default model IDs per provider
-  const defaultModels: Record<AIProvider, string> = {
-    qwen: "qwen-vl-plus",
-    gemini: "gemini-2.0-flash",
-    openai: "gpt-4o",
-  };
-
   return {
     provider,
-    apiKey,
-    baseUrl: Deno.env.get("AI_BASE_URL") || defaultBaseUrls[provider] || defaultBaseUrls.qwen,
-    modelId: Deno.env.get("AI_MODEL_ID") || requestModelId || defaultModels[provider] || "qwen-vl-plus",
+    apiKey: Deno.env.get("AI_API_KEY") || "",
+    baseUrl: Deno.env.get("AI_BASE_URL") || DEFAULT_BASE_URLS[provider] || DEFAULT_BASE_URLS.qwen,
+    modelId: resolveModelId(provider, cloudModelId, requestModelId),
   };
 }
 
@@ -210,7 +232,37 @@ function extractUserJwt(req: Request): string | null {
   return token;
 }
 
+const JWT_USER_CACHE_MAX = 2000;
+const jwtUserCache = new Map<string, { userId: string; expAt: number }>();
+
+function jwtCacheTtlMs(jwt: string): number {
+  try {
+    const part = jwt.split(".")[1];
+    if (!part) return 60_000;
+    const b64 = part.replace(/-/g, "+").replace(/_/g, "/");
+    const payload = JSON.parse(atob(b64)) as { exp?: number };
+    if (typeof payload.exp === "number") {
+      const ms = payload.exp * 1000 - Date.now();
+      return Math.min(60_000, Math.max(1_000, ms));
+    }
+  } catch {
+    /* ignore */
+  }
+  return 60_000;
+}
+
+function trimJwtUserCache(): void {
+  while (jwtUserCache.size > JWT_USER_CACHE_MAX) {
+    const first = jwtUserCache.keys().next().value;
+    if (first === undefined) break;
+    jwtUserCache.delete(first);
+  }
+}
+
 async function getAuthUserId(jwt: string): Promise<string | null> {
+  const hit = jwtUserCache.get(jwt);
+  if (hit && hit.expAt > Date.now()) return hit.userId;
+
   const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
   const url = Deno.env.get("SUPABASE_URL");
   if (!anonKey || !url) return null;
@@ -218,6 +270,11 @@ async function getAuthUserId(jwt: string): Promise<string | null> {
     const client = bearerUserClient(jwt);
     const { data, error } = await client.auth.getUser(jwt);
     if (error || !data?.user?.id) return null;
+    jwtUserCache.set(jwt, {
+      userId: data.user.id,
+      expAt: Date.now() + jwtCacheTtlMs(jwt),
+    });
+    trimJwtUserCache();
     return data.user.id;
   } catch (e) {
     console.warn("[ai-vision-proxy] getAuthUserId failed", e);
@@ -230,26 +287,298 @@ const APP_CONFIG_CLOUD_TTL_MS = 45_000;
 type AppConfigCloudState = {
   at: number;
   systemPrompt: string;
+  modelId: string;
+  maxTokens: number | null;
   intervalSec: number;
   dailyLimit: number;
   windowPerMin: number;
   maxConcurrent: number;
-  allowUnauthenticatedUse: boolean;
 };
 
-const AI_QUEUE_MAX_CAP = 100;
-const AI_QUEUE_MIN_CONCURRENT = 5;
+function envQueueMaxCap(): number {
+  return Math.max(1, envInt("AI_QUEUE_MAX_CAP", 100));
+}
 
 function clampQueueMax(n: number): number {
-  return Math.min(AI_QUEUE_MAX_CAP, Math.max(AI_QUEUE_MIN_CONCURRENT, Math.floor(n)));
+  const cap = envQueueMaxCap();
+  return Math.min(cap, Math.max(1, Math.floor(n)));
+}
+
+function upstreamTimeoutMs(): number {
+  const v = parseInt(Deno.env.get("AI_UPSTREAM_TIMEOUT_MS") || "", 10);
+  if (Number.isFinite(v) && v >= 5_000) return Math.min(120_000, v);
+  return 50_000;
+}
+
+function upstreamTimeoutSec(): number {
+  return Math.ceil(upstreamTimeoutMs() / 1000);
 }
 
 function envQueueDefaults(): { maxConcurrent: number; leaseSec: number; retrySec: number } {
+  const upstreamSec = upstreamTimeoutSec();
+  const minLeaseSec = upstreamSec + 15;
+  const configuredLease = envInt("AI_QUEUE_LEASE_SEC", 120);
   return {
-    maxConcurrent: clampQueueMax(envInt("AI_QUEUE_MAX_CONCURRENT", 100)),
-    leaseSec: Math.min(300, Math.max(30, envInt("AI_QUEUE_LEASE_SEC", 120))),
+    maxConcurrent: clampQueueMax(envInt("AI_QUEUE_MAX_CONCURRENT", envQueueMaxCap())),
+    leaseSec: Math.min(300, Math.max(minLeaseSec, Math.max(30, configuredLease))),
     retrySec: Math.min(30, Math.max(3, envInt("AI_QUEUE_RETRY_SEC", 8))),
   };
+}
+
+async function providerFetch(url: string, init?: RequestInit): Promise<Response> {
+  return await fetch(url, {
+    ...init,
+    signal: AbortSignal.timeout(upstreamTimeoutMs()),
+  });
+}
+
+function upstreamBusyResponse(retrySec = 15): Response {
+  const sec = Math.min(60, Math.max(5, Math.floor(retrySec)));
+  return json({ error: "UPSTREAM_BUSY", retry_after_seconds: sec }, 503);
+}
+
+/** Bad key / unknown model are not transient: 502 tells clients not to offer retry (still refunded). */
+async function providerErrorResponse(res: Response, label: string): Promise<Response> {
+  const errBody = await res.text();
+  console.error(
+    `[ai-vision][${label}] API error ${res.status}:`,
+    errBody.slice(0, 800),
+  );
+  if (res.status === 401 || res.status === 403) {
+    return json({ error: "PROVIDER_AUTH" }, 502);
+  }
+  if (res.status === 400 || res.status === 404 || res.status === 422) {
+    return json({ error: "PROVIDER_CONFIG" }, 502);
+  }
+  return upstreamBusyResponse(res.status === 429 ? 30 : 15);
+}
+
+async function invokeProvider(
+  label: string,
+  url: string,
+  init: RequestInit,
+  mode: "json" | "stream" = "json",
+): Promise<Response> {
+  try {
+    let res: Response;
+    if (mode === "stream") {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), upstreamTimeoutMs());
+      try {
+        res = await fetch(url, { ...init, signal: ctrl.signal });
+      } finally {
+        clearTimeout(timer);
+      }
+    } else {
+      res = await providerFetch(url, init);
+    }
+    if (!res.ok) return await providerErrorResponse(res, label);
+    return res;
+  } catch (e) {
+    console.error(`[ai-vision][${label}] fetch failed`, e);
+    return upstreamBusyResponse(15);
+  }
+}
+
+function streamMaxMs(): number {
+  return Math.min(180_000, Math.max(upstreamTimeoutMs(), envInt("AI_STREAM_MAX_MS", 120_000)));
+}
+
+function sseHeaders(): HeadersInit {
+  return {
+    ...CORS_HEADERS,
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache",
+  };
+}
+
+function pipeProviderSse(
+  upstream: Response,
+  kind: "openai" | "gemini",
+  provider: string,
+  model: string,
+): Response {
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+  const holder: UsageBits = { model, ok: false };
+  const started = Date.now();
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const send = (obj: unknown) => {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(obj)}\n\n`));
+      };
+      let full = "";
+      try {
+        if (!upstream.body) {
+          send({ error: "UPSTREAM_BUSY" });
+          return;
+        }
+        const reader = upstream.body.getReader();
+        let buf = "";
+        while (true) {
+          if (Date.now() - started > streamMaxMs()) {
+            send({ error: "UPSTREAM_BUSY" });
+            break;
+          }
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const parts = buf.split("\n");
+          buf = parts.pop() ?? "";
+          for (const line of parts) {
+            const t = line.trim();
+            if (!t.startsWith("data:")) continue;
+            const payload = t.slice(5).trim();
+            if (!payload || payload === "[DONE]") continue;
+            let data: any;
+            try {
+              data = JSON.parse(payload);
+            } catch {
+              continue;
+            }
+            const delta = kind === "openai"
+              ? String(data.choices?.[0]?.delta?.content ?? "")
+              : extractText(data);
+            if (delta) {
+              full += delta;
+              send({ delta });
+            }
+            const u = usageFromProviderPayload(data);
+            if (u.prompt_tokens != null || u.completion_tokens != null) {
+              holder.prompt_tokens = u.prompt_tokens ?? holder.prompt_tokens;
+              holder.completion_tokens = u.completion_tokens ?? holder.completion_tokens;
+            }
+          }
+        }
+        holder.ok = true;
+        send({ done: true, analysis: full, provider, model });
+      } catch (e) {
+        console.error("[ai-vision] stream pipe failed", e);
+        send({ error: "UPSTREAM_BUSY" });
+      } finally {
+        try { await upstream.body?.cancel(); } catch { /* ignore */ }
+        controller.close();
+      }
+    },
+    cancel() {
+      try { void upstream.body?.cancel(); } catch { /* ignore */ }
+    },
+  });
+  return rememberUsage(new Response(stream, { status: 200, headers: sseHeaders() }), holder);
+}
+
+function attachStreamLifecycle(
+  resp: Response,
+  onSettle: (ok: boolean) => Promise<void>,
+): Response {
+  const src = resp.body;
+  if (!src) {
+    void onSettle(false);
+    return resp;
+  }
+  let once = false;
+  const finish = (ok: boolean) => {
+    if (once) return;
+    once = true;
+    void onSettle(ok);
+  };
+  const holder = usageByResponse.get(resp);
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const reader = src.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          controller.enqueue(value);
+        }
+        finish(holder?.ok === true);
+        controller.close();
+      } catch (e) {
+        finish(false);
+        controller.error(e);
+      }
+    },
+    cancel() {
+      finish(false);
+      void src.cancel();
+    },
+  });
+  const wrapped = new Response(stream, { status: resp.status, headers: resp.headers });
+  if (holder) usageByResponse.set(wrapped, holder);
+  return wrapped;
+}
+
+async function completeOpenAiStyle(
+  label: string,
+  url: string,
+  payload: Record<string, unknown>,
+  apiKey: string,
+  provider: string,
+  model: string,
+): Promise<Response> {
+  const stream = requestWantsStream;
+  const res = await invokeProvider(label, url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(stream ? { ...payload, stream: true } : payload),
+  }, stream ? "stream" : "json");
+  if (!res.ok) return res;
+  if (stream) return pipeProviderSse(res, "openai", provider, model);
+  const data = await res.json();
+  return rememberUsage(
+    json({ analysis: extractText(data), provider, model }),
+    { model, ...usageFromProviderPayload(data), ok: true },
+  );
+}
+
+async function completeGeminiStyle(
+  label: string,
+  baseUrl: string,
+  model: string,
+  apiKey: string,
+  payload: Record<string, unknown>,
+): Promise<Response> {
+  const stream = requestWantsStream;
+  const url = stream
+    ? `${baseUrl}/models/${model}:streamGenerateContent?alt=sse`
+    : `${baseUrl}/models/${model}:generateContent`;
+  const res = await invokeProvider(label, url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
+    body: JSON.stringify(payload),
+  }, stream ? "stream" : "json");
+  if (!res.ok) return res;
+  if (stream) return pipeProviderSse(res, "gemini", "Gemini", model);
+  const data = await res.json();
+  return rememberUsage(
+    json({ analysis: extractText(data), provider: "Gemini", model }),
+    { model, ...usageFromProviderPayload(data), ok: true },
+  );
+}
+
+async function refundRateLimit(admin: SupabaseClient, userId: string): Promise<void> {
+  try {
+    const { error } = await admin.rpc("ai_rate_limit_refund", { p_user_id: userId });
+    if (error) console.warn("[ai-vision-proxy] ai_rate_limit_refund error:", error);
+  } catch (e) {
+    console.warn("[ai-vision-proxy] ai_rate_limit_refund exception:", e);
+  }
+}
+
+async function shouldRefundQuotaForResponse(resp: Response): Promise<boolean> {
+  if (resp.status === 503) {
+    try {
+      const data = await resp.clone().json();
+      return data?.error === "UPSTREAM_BUSY";
+    } catch {
+      return true;
+    }
+  }
+  return resp.status >= 500;
 }
 
 type QueueLeaseResult =
@@ -278,10 +607,11 @@ async function tryAcquireQueue(
       p_lease_sec: leaseSec,
       p_user_id: userId,
       p_route: route,
+      p_retry_sec: q.retrySec,
     });
     if (error) {
       console.error("[ai-vision-proxy] ai_queue_try_acquire error:", error);
-      return { ok: true, leaseId: "" };
+      return { ok: false, retryAfter: q.retrySec, queueDepth: undefined };
     }
     const row = Array.isArray(data) ? data[0] : data;
     if (row?.status === "OK" && row?.lease_id) {
@@ -297,7 +627,7 @@ async function tryAcquireQueue(
     };
   } catch (e) {
     console.warn("[ai-vision-proxy] ai_queue_try_acquire exception:", e);
-    return { ok: true, leaseId: "" };
+    return { ok: false, retryAfter: q.retrySec, queueDepth: undefined };
   }
 }
 
@@ -321,8 +651,10 @@ function envRateDefaults(): { intervalSec: number; dailyLimit: number; windowPer
   };
 }
 
+const MODEL_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
 /**
- * One app_config read for systemPrompt + rate limits (short TTL), merged with
+ * One app_config read for systemPrompt / modelId / maxTokens + rate limits (short TTL), merged with
  * env fallbacks. cloudAIConfig.clientCooldownSeconds / clientDailyLimit / clientWindowPerMin
  * override env when set (>= 1); otherwise env (or built-in default) is used.
  */
@@ -334,11 +666,12 @@ async function getAppConfigCloudCache(admin: SupabaseClient): Promise<AppConfigC
   const fb = envRateDefaults();
   const qd = envQueueDefaults();
   let systemPrompt = "";
+  let modelId = "";
+  let maxTokens: number | null = null;
   let intervalSec = fb.intervalSec;
   let dailyLimit = fb.dailyLimit;
   let windowPerMin = fb.windowPerMin;
   let maxConcurrent = qd.maxConcurrent;
-  let allowUnauthenticatedUse = false;
   try {
     const { data, error } = await admin
       .from("app_config")
@@ -353,8 +686,12 @@ async function getAppConfigCloudCache(admin: SupabaseClient): Promise<AppConfigC
         if (typeof c.systemPrompt === "string" && c.systemPrompt.trim()) {
           systemPrompt = c.systemPrompt.trim();
         }
-        if (c.allowUnauthenticatedUse === true) {
-          allowUnauthenticatedUse = true;
+        if (typeof c.modelId === "string" && MODEL_ID_RE.test(c.modelId.trim())) {
+          modelId = c.modelId.trim();
+        }
+        const mt = c.maxTokens;
+        if (typeof mt === "number" && Number.isFinite(mt) && mt >= 64) {
+          maxTokens = Math.floor(mt);
         }
         const cs = c.clientCooldownSeconds;
         if (typeof cs === "number" && Number.isFinite(cs) && cs >= 1) {
@@ -380,24 +717,14 @@ async function getAppConfigCloudCache(admin: SupabaseClient): Promise<AppConfigC
   appConfigCloudCache = {
     at: now,
     systemPrompt,
+    modelId,
+    maxTokens,
     intervalSec,
     dailyLimit,
     windowPerMin,
     maxConcurrent,
-    allowUnauthenticatedUse,
   };
   return appConfigCloudCache;
-}
-
-/** Load cloudAIConfig.systemPrompt from app_config (shared TTL cache). */
-async function getAppConfigSystemPrompt(): Promise<string> {
-  try {
-    const c = await getAppConfigCloudCache(adminClient());
-    return c.systemPrompt;
-  } catch (e) {
-    console.warn("[ai-vision-proxy] getAppConfigSystemPrompt failed", e);
-    return "";
-  }
 }
 
 function pickSystemPrompt(
@@ -429,6 +756,58 @@ function getClientIp(req: Request): string {
 function envInt(key: string, fallback: number): number {
   const v = parseInt(Deno.env.get(key) || "", 10);
   return Number.isFinite(v) && v > 0 ? v : fallback;
+}
+
+function sanitizeClientBody(
+  body: Record<string, unknown>,
+  cloudCfg: AppConfigCloudState,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...body };
+  const tokenCap = envInt("AI_MAX_TOKENS_CAP", 2048);
+  const rawTokens = cloudCfg.maxTokens ?? out.maxTokens;
+  if (typeof rawTokens === "number" && Number.isFinite(rawTokens)) {
+    out.maxTokens = Math.min(tokenCap, Math.max(64, Math.floor(rawTokens)));
+  } else {
+    out.maxTokens = Math.min(tokenCap, 1024);
+  }
+  if (!isClientModelIdAllowed(out.modelId)) {
+    delete out.modelId;
+  }
+  if (typeof out.previousAnalysis === "string" && out.previousAnalysis.length > 12_000) {
+    out.previousAnalysis = out.previousAnalysis.slice(-12_000);
+  }
+  if (typeof out.userMessage === "string" && out.userMessage.length > 2_000) {
+    out.userMessage = out.userMessage.slice(0, 2_000);
+  }
+  out.history = sanitizeHistory(out.history);
+  return out;
+}
+
+type ChatTurn = { role: "user" | "assistant"; content: string };
+
+function sanitizeHistory(raw: unknown): ChatTurn[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ChatTurn[] = [];
+  for (const item of raw.slice(-10)) {
+    if (!item || typeof item !== "object") continue;
+    const rec = item as { role?: unknown; content?: unknown };
+    const role = rec.role === "assistant" ? "assistant" : rec.role === "user" ? "user" : null;
+    if (!role) continue;
+    const content = typeof rec.content === "string" ? rec.content.slice(0, 2_000) : "";
+    if (!content) continue;
+    out.push({ role, content });
+  }
+  return out;
+}
+
+const IMAGE_DATA_URL_RE = /^data:image\/(jpeg|png|webp);base64,/;
+
+/** Only accept the data URLs the client compressor produces (no remote URLs / other MIME forwarded upstream). */
+function invalidImageError(image: unknown): "BAD_IMAGE" | "PAYLOAD_TOO_LARGE" | null {
+  if (image === undefined || image === null) return null;
+  if (typeof image !== "string" || !IMAGE_DATA_URL_RE.test(image)) return "BAD_IMAGE";
+  if (image.length > envInt("AI_MAX_IMAGE_CHARS", 1_000_000)) return "PAYLOAD_TOO_LARGE";
+  return null;
 }
 
 type RateLimitGate =
@@ -496,58 +875,75 @@ async function enforceRateLimit(
   return { ok: true };
 }
 
-/** In-memory guest (IP) rate limit — per Edge isolate; pair with Cloudflare IP limiting in prod */
-const guestIpCalls = new Map<string, number[]>();
+type UsageBits = {
+  model?: string | null;
+  prompt_tokens?: number | null;
+  completion_tokens?: number | null;
+  latency_ms?: number | null;
+  status?: string | null;
+  ok?: boolean;
+};
 
-function pruneGuestTimestamps(calls: number[], now: number): number[] {
-  const dayAgo = now - 86_400_000;
-  return calls.filter((t) => t > dayAgo).slice(-500);
+function numOrNull(v: unknown): number | null {
+  return typeof v === "number" && Number.isFinite(v) ? Math.floor(v) : null;
 }
 
-function enforceGuestRateLimit(
-  ip: string,
-  limits: { intervalSec: number; dailyLimit: number; windowPerMin: number },
-): RateLimitGate {
-  const key = ip || "unknown";
-  const now = Date.now();
-  const prev = guestIpCalls.get(key) ?? [];
-  const calls = pruneGuestTimestamps(prev, now);
-
-  if (calls.length >= limits.dailyLimit) {
-    return { ok: false, code: "DAILY" };
+function usageFromProviderPayload(data: any): Pick<UsageBits, "prompt_tokens" | "completion_tokens"> {
+  const u = data?.usage;
+  if (u && typeof u === "object") {
+    return {
+      prompt_tokens: numOrNull(u.prompt_tokens ?? u.input_tokens),
+      completion_tokens: numOrNull(u.completion_tokens ?? u.output_tokens),
+    };
   }
-
-  const last = calls.length ? calls[calls.length - 1] : 0;
-  if (last && now - last < limits.intervalSec * 1000) {
-    return { ok: false, code: "INTERVAL", retryAfter: limits.intervalSec };
+  const g = data?.usageMetadata;
+  if (g && typeof g === "object") {
+    return {
+      prompt_tokens: numOrNull(g.promptTokenCount),
+      completion_tokens: numOrNull(g.candidatesTokenCount),
+    };
   }
-
-  const minAgo = now - 60_000;
-  const inWindow = calls.filter((t) => t > minAgo).length;
-  if (inWindow >= limits.windowPerMin) {
-    return { ok: false, code: "WINDOW", retryAfter: 60 };
-  }
-
-  calls.push(now);
-  guestIpCalls.set(key, calls);
-  return { ok: true };
+  return {};
 }
 
-/** 成功调用 AI 后异步记录一行 ai_usage（滑动窗口依据） */
+const usageByResponse = new WeakMap<Response, UsageBits>();
+
+function rememberUsage(resp: Response, bits: UsageBits): Response {
+  usageByResponse.set(resp, bits);
+  return resp;
+}
+
+/** Set for the current POST; vision/text completions honor it. Voice stays JSON. */
+let requestWantsStream = false;
+
+/** 成功调用 AI 后异步记录一行 ai_usage（滑动窗口依据；A12 附带 model/tokens/latency/status） */
 function recordAiUsage(
   admin: SupabaseClient,
   userId: string,
   route: string,
   provider: string,
   ip: string,
+  extra?: UsageBits,
 ): void {
   waitUntil(
-    admin
-      .from("ai_usage")
-      .insert({ user_id: userId, route, provider, ip })
-      .then(({ error }) => {
-        if (error) console.warn("[ai-vision-proxy] insert ai_usage failed", error);
-      }),
+    Promise.resolve(
+      admin
+        .from("ai_usage")
+        .insert({
+          user_id: userId,
+          route,
+          provider,
+          ip,
+          model: extra?.model ?? null,
+          prompt_tokens: extra?.prompt_tokens ?? null,
+          completion_tokens: extra?.completion_tokens ?? null,
+          latency_ms: extra?.latency_ms ?? null,
+          status: extra?.status ?? "ok",
+        })
+        .then(({ error }) => {
+          if (error) console.warn("[ai-vision-proxy] insert ai_usage failed", error);
+        }),
+    ),
   );
 }
 
@@ -564,7 +960,8 @@ Deno.serve(async (req: Request) => {
   try {
     // GET /health — 不鉴权，便于探活
     if (route === "/health" && method === "GET") {
-      const cfg = getAIConfig();
+      const cloudCfg = await getAppConfigCloudCache(adminClient());
+      const cfg = getAIConfig(cloudCfg.modelId);
       return json({
         status: "ok",
         timestamp: new Date().toISOString(),
@@ -574,29 +971,39 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    // POST / — Main analysis endpoint（鉴权 + 限流）
+    // POST / — Main analysis endpoint（鉴权 + 限流；网关 verify_jwt=true）
     if ((route === "/" || route === "") && method === "POST") {
       const admin = adminClient();
       const cloudCfg = await getAppConfigCloudCache(admin);
       const jwt = extractUserJwt(req);
-      let userId: string | null = null;
-      let rateKey: string;
-      let isGuest = false;
-
-      if (jwt) {
-        userId = await getAuthUserId(jwt);
+      if (!jwt) {
+        return errResp("unauthorized", 401);
       }
-
-      if (userId) {
-        rateKey = userId;
-      } else if (cloudCfg.allowUnauthenticatedUse) {
-        isGuest = true;
-        rateKey = getClientIp(req) || "unknown";
-      } else {
+      const userId = await getAuthUserId(jwt);
+      if (!userId) {
         return errResp("unauthorized", 401);
       }
 
-      const body = (await req.json()) as Record<string, unknown>;
+      const maxBodyBytes = envInt("AI_MAX_BODY_BYTES", 2_000_000);
+      const rawBody = await req.text();
+      if (rawBody.length > maxBodyBytes) {
+        return json({ error: "PAYLOAD_TOO_LARGE" }, 413);
+      }
+      let body: Record<string, unknown>;
+      try {
+        const parsed = JSON.parse(rawBody);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          return json({ error: "BAD_JSON" }, 400);
+        }
+        body = sanitizeClientBody(parsed as Record<string, unknown>, cloudCfg);
+      } catch {
+        return json({ error: "BAD_JSON" }, 400);
+      }
+      const imageError = invalidImageError(body.image);
+      if (imageError) {
+        return json({ error: imageError }, imageError === "PAYLOAD_TOO_LARGE" ? 413 : 400);
+      }
+
       const routeHint = routeHintFromBody(body);
 
       const lease = await tryAcquireQueue(admin, userId, routeHint, cloudCfg);
@@ -611,10 +1018,9 @@ Deno.serve(async (req: Request) => {
         );
       }
 
+      let releasedByStream = false;
       try {
-        const gate = isGuest
-          ? enforceGuestRateLimit(rateKey, cloudCfg)
-          : await enforceRateLimit(admin, userId!);
+        const gate = await enforceRateLimit(admin, userId);
         if (!gate.ok) {
           return json(
             { error: gate.code, retry_after_seconds: gate.retryAfter ?? null },
@@ -622,18 +1028,45 @@ Deno.serve(async (req: Request) => {
           );
         }
 
-        const resp = await handleAnalysis(body);
+        const wantStream = (req.headers.get("accept") || "").includes("text/event-stream");
+        const startedAt = Date.now();
+        const resp = await handleAnalysis(body, cloudCfg, wantStream);
 
-        if (resp.status >= 200 && resp.status < 300 && userId) {
-          const provider = (Deno.env.get("AI_PROVIDER") || "qwen");
-          const ip = getClientIp(req);
-          const usageRoute = routeHint === "analysis" ? "analysis" : routeHint;
-          recordAiUsage(admin, userId, usageRoute, provider, ip);
+        const provider = (Deno.env.get("AI_PROVIDER") || "qwen");
+        const ip = getClientIp(req);
+        const usageRoute = routeHint === "analysis" ? "analysis" : routeHint;
+        const ct = resp.headers.get("content-type") || "";
+        if (ct.includes("text/event-stream")) {
+          releasedByStream = true;
+          return attachStreamLifecycle(resp, async (ok) => {
+            await releaseQueue(admin, lease.leaseId);
+            const bits = usageByResponse.get(resp);
+            if (ok) {
+              recordAiUsage(admin, userId, usageRoute, provider, ip, {
+                ...bits,
+                latency_ms: Date.now() - startedAt,
+                status: "ok",
+              });
+            } else {
+              await refundRateLimit(admin, userId);
+            }
+          });
+        }
+
+        if (resp.status >= 200 && resp.status < 300) {
+          const bits = usageByResponse.get(resp);
+          recordAiUsage(admin, userId, usageRoute, provider, ip, {
+            ...bits,
+            latency_ms: Date.now() - startedAt,
+            status: "ok",
+          });
+        } else if (await shouldRefundQuotaForResponse(resp)) {
+          await refundRateLimit(admin, userId);
         }
 
         return resp;
       } finally {
-        await releaseQueue(admin, lease.leaseId);
+        if (!releasedByStream) await releaseQueue(admin, lease.leaseId);
       }
     }
 
@@ -648,8 +1081,10 @@ Deno.serve(async (req: Request) => {
 // Analysis Handler — Routes to the correct AI provider
 // ============================================================================
 
-async function handleAnalysis(body: any): Promise<Response> {
-  const cfg = getAIConfig(body.modelId);
+async function handleAnalysis(body: any, cloudCfg: AppConfigCloudState, wantStream = false): Promise<Response> {
+  const cfg = getAIConfig(cloudCfg.modelId, body.modelId);
+
+  requestWantsStream = wantStream === true && !body.voiceFollowUp;
 
   if (!cfg.apiKey) {
     return errResp(
@@ -658,7 +1093,7 @@ async function handleAnalysis(body: any): Promise<Response> {
     );
   }
 
-  const dbPrompt = await getAppConfigSystemPrompt();
+  const dbPrompt = cloudCfg.systemPrompt;
 
   // Determine request type
   if (body.voiceFollowUp) {
@@ -729,7 +1164,7 @@ async function handleTextFollowUp(
   body: any,
   dbPrompt: string,
 ): Promise<Response> {
-  const { userMessage, previousAnalysis, systemPrompt, maxTokens, uiLanguage } = body;
+  const { userMessage, previousAnalysis, systemPrompt, maxTokens, uiLanguage, history } = body;
 
   if (!userMessage) {
     return errResp("Missing 'userMessage'");
@@ -745,7 +1180,7 @@ async function handleTextFollowUp(
     body,
   );
 
-  const messages = buildTextMessages(systemMsg, previousAnalysis, userMessage);
+  const messages = buildTextMessages(systemMsg, previousAnalysis, userMessage, history);
   const tokenLimit = maxTokens || 1024;
 
   switch (cfg.provider) {
@@ -769,7 +1204,7 @@ async function handleFollowUpWithImage(
   body: any,
   dbPrompt: string,
 ): Promise<Response> {
-  const { image, userMessage, previousAnalysis, systemPrompt, maxTokens, uiLanguage } = body;
+  const { image, userMessage, previousAnalysis, systemPrompt, maxTokens, uiLanguage, history } = body;
 
   if (!image) {
     return errResp("Missing 'image' field (base64 image data)");
@@ -788,9 +1223,7 @@ async function handleFollowUpWithImage(
     body,
   );
 
-  const contextBlock = previousAnalysis
-    ? `Previous analysis and conversation:\n${previousAnalysis}\n\n`
-    : "";
+  const contextBlock = formatHistoryContext(previousAnalysis, history);
   const userPrompt =
     `${contextBlock}User follow-up: ${userMessage}\n\n` +
     "Please analyze this new photo and explain how it relates to the prior context.";
@@ -818,7 +1251,7 @@ async function handleVoiceFollowUp(
   body: any,
   dbPrompt: string,
 ): Promise<Response> {
-  const { audio, previousAnalysis, systemPrompt, maxTokens, uiLanguage } = body;
+  const { audio, previousAnalysis, systemPrompt, maxTokens, uiLanguage, history } = body;
 
   if (!audio) {
     return errResp("Missing 'audio' field (base64 audio data)");
@@ -854,17 +1287,18 @@ async function handleVoiceFollowUp(
   switch (cfg.provider) {
     case "gemini":
       // Gemini supports inline audio data
-      return await callGeminiAudio(cfg, systemMsg, previousAnalysis, audioBase64, mimeType, tokenLimit);
+      return await callGeminiAudio(cfg, systemMsg, formatHistoryContext(previousAnalysis, history) || previousAnalysis, audioBase64, mimeType, tokenLimit);
     case "openai":
       // GPT-4o supports audio in input_audio format
-      return await callOpenAIAudio(cfg, systemMsg, previousAnalysis, audioBase64, tokenLimit);
+      return await callOpenAIAudio(cfg, systemMsg, formatHistoryContext(previousAnalysis, history) || previousAnalysis, audioBase64, tokenLimit);
     case "qwen":
       // Qwen VL doesn't natively support audio — fallback to text
-      return await callQwenText(cfg, [
-        { role: "system", content: systemMsg },
-        ...(previousAnalysis ? [{ role: "assistant", content: previousAnalysis }] : []),
-        { role: "user", content: "[User sent a voice message. Audio transcription is not available for this provider. Please ask the user to type their question.]" },
-      ], tokenLimit);
+      return await callQwenText(cfg, buildTextMessages(
+        systemMsg,
+        previousAnalysis,
+        "[User sent a voice message. Audio transcription is not available for this provider. Please ask the user to type their question.]",
+        history,
+      ), tokenLimit);
     default:
       return errResp(`Unsupported provider: ${cfg.provider}`);
   }
@@ -876,16 +1310,31 @@ async function handleVoiceFollowUp(
 
 // ---- Helper: Build text messages ----
 
+function formatHistoryContext(previousAnalysis: string | undefined, history?: ChatTurn[]): string {
+  const parts: string[] = [];
+  if (previousAnalysis) parts.push(`Previous analysis:\n${previousAnalysis}`);
+  if (history && history.length) {
+    parts.push(history.map((t) => `[${t.role}]: ${t.content}`).join("\n"));
+  }
+  return parts.length ? parts.join("\n\n") + "\n\n" : "";
+}
+
 function buildTextMessages(
   systemMsg: string,
   previousAnalysis: string | undefined,
   userMessage: string,
+  history?: ChatTurn[],
 ): { role: string; content: string }[] {
   const messages: { role: string; content: string }[] = [
     { role: "system", content: systemMsg },
   ];
   if (previousAnalysis) {
     messages.push({ role: "assistant", content: previousAnalysis });
+  }
+  if (history && history.length) {
+    for (const turn of history) {
+      messages.push({ role: turn.role, content: turn.content });
+    }
   }
   messages.push({ role: "user", content: userMessage });
   return messages;
@@ -925,7 +1374,7 @@ async function callQwen(
     ? imageBase64
     : `data:image/jpeg;base64,${imageBase64}`;
 
-  const payload = {
+  return await completeOpenAiStyle("Qwen", url, {
     model: cfg.modelId,
     messages: [
       { role: "system", content: systemMsg },
@@ -938,31 +1387,7 @@ async function callQwen(
       },
     ],
     max_tokens: maxTokens,
-  };
-
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${cfg.apiKey}`,
-    },
-    body: JSON.stringify(payload),
-  });
-
-  if (!res.ok) {
-    const errBody = await res.text();
-    console.error(`[ai-vision][Qwen] API error ${res.status}:`, errBody);
-    return errResp(`Qwen API error: ${res.status} ${errBody}`, 502);
-  }
-
-  const data = await res.json();
-  const analysis = extractText(data);
-
-  return json({
-    analysis,
-    provider: "通义千问",
-    model: cfg.modelId,
-  });
+  }, cfg.apiKey, "通义千问", cfg.modelId);
 }
 
 async function callQwenText(
@@ -972,27 +1397,11 @@ async function callQwenText(
 ): Promise<Response> {
   const url = `${cfg.baseUrl}/chat/completions`;
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${cfg.apiKey}`,
-    },
-    body: JSON.stringify({
-      model: cfg.modelId.replace("-vl-", "-"), // Use text model for follow-ups
-      messages,
-      max_tokens: maxTokens,
-    }),
-  });
-
-  if (!res.ok) {
-    const errBody = await res.text();
-    console.error(`[ai-vision][Qwen] Text API error ${res.status}:`, errBody);
-    return errResp(`Qwen API error: ${res.status}`, 502);
-  }
-
-  const data = await res.json();
-  return json({ analysis: extractText(data), provider: "通义千问", model: cfg.modelId });
+  return await completeOpenAiStyle("Qwen", url, {
+    model: cfg.modelId.replace("-vl-", "-"), // Use text model for follow-ups
+    messages,
+    max_tokens: maxTokens,
+  }, cfg.apiKey, "通义千问", cfg.modelId);
 }
 
 // ============================================================================
@@ -1009,14 +1418,11 @@ async function callGemini(
   maxTokens: number,
 ): Promise<Response> {
   const model = cfg.modelId;
-  const url = `${cfg.baseUrl}/models/${model}:generateContent?key=${cfg.apiKey}`;
-
-  // Strip data URL prefix if present
   const cleanBase64 = imageBase64.replace(/^data:image\/[^;]+;base64,/, "");
   const mimeMatch = imageBase64.match(/^data:(image\/[^;]+);base64,/);
   const mimeType = mimeMatch ? mimeMatch[1] : "image/jpeg";
 
-  const payload = {
+  return await completeGeminiStyle("Gemini", cfg.baseUrl, model, cfg.apiKey, {
     system_instruction: { parts: [{ text: systemMsg }] },
     contents: [
       {
@@ -1027,24 +1433,7 @@ async function callGemini(
       },
     ],
     generationConfig: { maxOutputTokens: maxTokens },
-  };
-
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
   });
-
-  if (!res.ok) {
-    const errBody = await res.text();
-    console.error(`[ai-vision][Gemini] API error ${res.status}:`, errBody);
-    return errResp(`Gemini API error: ${res.status}`, 502);
-  }
-
-  const data = await res.json();
-  const analysis = extractText(data);
-
-  return json({ analysis, provider: "Gemini", model });
 }
 
 async function callGeminiText(
@@ -1053,9 +1442,6 @@ async function callGeminiText(
   maxTokens: number,
 ): Promise<Response> {
   const model = cfg.modelId;
-  const url = `${cfg.baseUrl}/models/${model}:generateContent?key=${cfg.apiKey}`;
-
-  // Convert OpenAI-style messages to Gemini format
   const systemInstruction = messages.find((m) => m.role === "system")?.content || "";
   const contents = messages
     .filter((m) => m.role !== "system")
@@ -1064,24 +1450,11 @@ async function callGeminiText(
       parts: [{ text: m.content }],
     }));
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      system_instruction: { parts: [{ text: systemInstruction }] },
-      contents,
-      generationConfig: { maxOutputTokens: maxTokens },
-    }),
+  return await completeGeminiStyle("Gemini", cfg.baseUrl, model, cfg.apiKey, {
+    system_instruction: { parts: [{ text: systemInstruction }] },
+    contents,
+    generationConfig: { maxOutputTokens: maxTokens },
   });
-
-  if (!res.ok) {
-    const errBody = await res.text();
-    console.error(`[ai-vision][Gemini] Text API error ${res.status}:`, errBody);
-    return errResp(`Gemini API error: ${res.status}`, 502);
-  }
-
-  const data = await res.json();
-  return json({ analysis: extractText(data), provider: "Gemini", model });
 }
 
 async function callGeminiAudio(
@@ -1093,7 +1466,7 @@ async function callGeminiAudio(
   maxTokens: number,
 ): Promise<Response> {
   const model = cfg.modelId;
-  const url = `${cfg.baseUrl}/models/${model}:generateContent?key=${cfg.apiKey}`;
+  const url = `${cfg.baseUrl}/models/${model}:generateContent`;
 
   const parts: any[] = [];
   if (previousAnalysis) {
@@ -1102,24 +1475,22 @@ async function callGeminiAudio(
   parts.push({ inline_data: { mime_type: mimeType, data: audioBase64 } });
   parts.push({ text: "Please listen to this voice message and respond with helpful agricultural advice." });
 
-  const res = await fetch(url, {
+  const res = await invokeProvider("Gemini", url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "x-goog-api-key": cfg.apiKey },
     body: JSON.stringify({
       system_instruction: { parts: [{ text: systemMsg }] },
       contents: [{ parts }],
       generationConfig: { maxOutputTokens: maxTokens },
     }),
   });
-
-  if (!res.ok) {
-    const errBody = await res.text();
-    console.error(`[ai-vision][Gemini] Audio API error ${res.status}:`, errBody);
-    return errResp(`Gemini audio API error: ${res.status}`, 502);
-  }
+  if (!res.ok) return res;
 
   const data = await res.json();
-  return json({ analysis: extractText(data), provider: "Gemini", model });
+  return rememberUsage(
+    json({ analysis: extractText(data), provider: "Gemini", model }),
+    { model, ...usageFromProviderPayload(data), ok: true },
+  );
 }
 
 // ============================================================================
@@ -1142,7 +1513,7 @@ async function callOpenAI(
     ? imageBase64
     : `data:image/jpeg;base64,${imageBase64}`;
 
-  const payload = {
+  return await completeOpenAiStyle("OpenAI", url, {
     model: cfg.modelId,
     messages: [
       { role: "system", content: systemMsg },
@@ -1155,27 +1526,7 @@ async function callOpenAI(
       },
     ],
     max_tokens: maxTokens,
-  };
-
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${cfg.apiKey}`,
-    },
-    body: JSON.stringify(payload),
-  });
-
-  if (!res.ok) {
-    const errBody = await res.text();
-    console.error(`[ai-vision][OpenAI] API error ${res.status}:`, errBody);
-    return errResp(`OpenAI API error: ${res.status}`, 502);
-  }
-
-  const data = await res.json();
-  const analysis = extractText(data);
-
-  return json({ analysis, provider: "OpenAI", model: cfg.modelId });
+  }, cfg.apiKey, "OpenAI", cfg.modelId);
 }
 
 async function callOpenAIText(
@@ -1185,27 +1536,11 @@ async function callOpenAIText(
 ): Promise<Response> {
   const url = `${cfg.baseUrl}/chat/completions`;
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${cfg.apiKey}`,
-    },
-    body: JSON.stringify({
-      model: cfg.modelId,
-      messages,
-      max_tokens: maxTokens,
-    }),
-  });
-
-  if (!res.ok) {
-    const errBody = await res.text();
-    console.error(`[ai-vision][OpenAI] Text API error ${res.status}:`, errBody);
-    return errResp(`OpenAI API error: ${res.status}`, 502);
-  }
-
-  const data = await res.json();
-  return json({ analysis: extractText(data), provider: "OpenAI", model: cfg.modelId });
+  return await completeOpenAiStyle("OpenAI", url, {
+    model: cfg.modelId,
+    messages,
+    max_tokens: maxTokens,
+  }, cfg.apiKey, "OpenAI", cfg.modelId);
 }
 
 async function callOpenAIAudio(
@@ -1228,36 +1563,40 @@ async function callOpenAIAudio(
   });
   userContent.push({ type: "text", text: "Please listen to this voice message and respond with helpful agricultural advice." });
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${cfg.apiKey}`,
-    },
-    body: JSON.stringify({
-      model: cfg.modelId,
-      messages: [
-        { role: "system", content: systemMsg },
-        { role: "user", content: userContent },
-      ],
-      max_tokens: maxTokens,
-    }),
-  });
-
-  if (!res.ok) {
-    const errBody = await res.text();
-    console.error(`[ai-vision][OpenAI] Audio API error ${res.status}:`, errBody);
-    // Fallback: if audio not supported, try as text
-    if (res.status === 400) {
-      return await callOpenAIText(cfg, [
-        { role: "system", content: systemMsg },
-        ...(previousAnalysis ? [{ role: "assistant", content: previousAnalysis }] : []),
-        { role: "user", content: "[User sent a voice message. Audio transcription is not available. Please ask the user to type their question.]" },
-      ], maxTokens);
-    }
-    return errResp(`OpenAI audio API error: ${res.status}`, 502);
+  let res: Response;
+  try {
+    res = await providerFetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${cfg.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: cfg.modelId,
+        messages: [
+          { role: "system", content: systemMsg },
+          { role: "user", content: userContent },
+        ],
+        max_tokens: maxTokens,
+      }),
+    });
+  } catch (e) {
+    console.error("[ai-vision][OpenAI] Audio fetch failed", e);
+    return upstreamBusyResponse(15);
   }
 
+  if (res.status === 400) {
+    return await callOpenAIText(cfg, [
+      { role: "system", content: systemMsg },
+      ...(previousAnalysis ? [{ role: "assistant", content: previousAnalysis }] : []),
+      { role: "user", content: "[User sent a voice message. Audio transcription is not available. Please ask the user to type their question.]" },
+    ], maxTokens);
+  }
+  if (!res.ok) return await providerErrorResponse(res, "OpenAI");
+
   const data = await res.json();
-  return json({ analysis: extractText(data), provider: "OpenAI", model: cfg.modelId });
+  return rememberUsage(
+    json({ analysis: extractText(data), provider: "OpenAI", model: cfg.modelId }),
+    { model: cfg.modelId, ...usageFromProviderPayload(data), ok: true },
+  );
 }

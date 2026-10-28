@@ -359,11 +359,17 @@ export function useEdgeProfile() {
       if (document.visibilityState !== "visible") return;
       handleForeground();
     };
+    const handleOnline = () => {
+      if (!isUserLoggedIn() || !isServerAssignedId()) return;
+      void refresh({ background: true });
+    };
     document.addEventListener("visibilitychange", handleVisibility);
     window.addEventListener("pageshow", handleForeground);
+    window.addEventListener("online", handleOnline);
     return () => {
       document.removeEventListener("visibilitychange", handleVisibility);
       window.removeEventListener("pageshow", handleForeground);
+      window.removeEventListener("online", handleOnline);
     };
   }, [refresh]);
 

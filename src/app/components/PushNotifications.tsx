@@ -3,6 +3,7 @@ import { Bell, BellOff, Check, X, AlertTriangle } from "lucide-react";
 import { useLanguage } from "../hooks/useLanguage";
 import { useConfigContext } from "../hooks/ConfigProvider";
 import { getSessionAccessTokenForEdge, TAPROOT_AUTH_CHANGE_EVENT } from "../utils/auth";
+import { resolvePushApiBase } from "../utils/webPush";
 
 /**
  * Push Notifications Component
@@ -46,33 +47,15 @@ export function PushNotifications({ onSubscriptionChange }: PushNotificationsPro
     return "";
   }, [ppc?.webpush?.vapidPublicKey, pushConfig.vapidPublicKey]);
 
-  const effectivePushApiBase = useMemo(() => {
-    const derivedFromSupabase = () => {
-      const url = (bp?.supabaseUrl || "").trim().replace(/\/$/, "");
-      const fn = (bp?.edgeFunctionName || "server").trim() || "server";
-      if (url.length > 0 && url.startsWith("http")) {
-        return `${url}/functions/v1/${fn}`;
-      }
-      return "";
-    };
-
-    const normalizePushApiBase = (raw: string) => {
-      const base = raw.trim().replace(/\/$/, "");
-      if (!base || base === "https://api.example.com" || base.length <= 8) return "";
-      // Bare host without Edge Function path — use standard Supabase layout.
-      if (!base.includes("/functions/v1/")) {
-        const derived = derivedFromSupabase();
-        if (derived) return derived;
-      }
-      return base;
-    };
-
-    const fromWebpush = normalizePushApiBase(ppc?.webpush?.pushApiBase || "");
-    if (fromWebpush) return fromWebpush;
-    const fromPushConfig = normalizePushApiBase(pushConfig.pushApiBase || "");
-    if (fromPushConfig) return fromPushConfig;
-    return derivedFromSupabase();
-  }, [ppc?.webpush?.pushApiBase, pushConfig.pushApiBase, bp?.supabaseUrl, bp?.edgeFunctionName]);
+  const effectivePushApiBase = useMemo(
+    () =>
+      resolvePushApiBase({
+        pushConfig: { pushApiBase: pushConfig.pushApiBase },
+        pushProvidersConfig: { webpush: { pushApiBase: ppc?.webpush?.pushApiBase } },
+        backendProxyConfig: { supabaseUrl: bp?.supabaseUrl, edgeFunctionName: bp?.edgeFunctionName },
+      }),
+    [ppc?.webpush?.pushApiBase, pushConfig.pushApiBase, bp?.supabaseUrl, bp?.edgeFunctionName],
+  );
 
   // Check if backend is configured (not placeholder values)
   const isBackendConfigured = useCallback(() => {

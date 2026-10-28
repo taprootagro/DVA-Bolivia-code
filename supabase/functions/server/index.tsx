@@ -62,7 +62,9 @@
 // ============================================================================
 
 import { createClient, type User } from "jsr:@supabase/supabase-js@2.49.8";
-import { mergeConfigPreserveEmptyMediaUrls } from "../_shared/configMergeEmptyPreserve.ts";
+import { mergeConfigEmptyStringOverwrites } from "../_shared/configMergeEmptyPreserve.ts";
+import { redactPublicConfig } from "../_shared/redactPublicConfig.ts";
+import { applyEditorFieldScope } from "../_shared/editorFields.ts";
 import { cmsS3Presign } from "../_shared/cmsPresignLogic.ts";
 import {
   sendFcmV1,
@@ -431,6 +433,13 @@ async function requireUserJwt(
   return { user };
 }
 
+const INSECURE_CONFIG_WRITE = Deno.env.get("ALLOW_INSECURE_PUBLIC_CONFIG_WRITE") === "true";
+if (INSECURE_CONFIG_WRITE) {
+  console.warn(
+    "[server] SECURITY: booted with ALLOW_INSECURE_PUBLIC_CONFIG_WRITE=true — anyone with the anon key can write app_config. Unset it in production.",
+  );
+}
+
 // ---- Main handler ----
 
 Deno.serve(async (req: Request) => {
@@ -451,6 +460,7 @@ Deno.serve(async (req: Request) => {
         status: "ok",
         timestamp: new Date().toISOString(),
         version: "1.0.0",
+        insecureConfigWrite: INSECURE_CONFIG_WRITE,
       });
     }
 
@@ -699,16 +709,6 @@ async function getJwtUserContentRole(req: Request): Promise<string> {
 }
 
 /** Strip operator-only fields for anonymous / non-admin clients. */
-function redactPublicConfig(config: unknown): unknown {
-  if (!config || typeof config !== "object" || Array.isArray(config)) return config;
-  const c = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
-  const cloud = c.cloudAIConfig;
-  if (cloud && typeof cloud === "object" && !Array.isArray(cloud)) {
-    delete (cloud as Record<string, unknown>).systemPrompt;
-  }
-  return c;
-}
-
 async function handleGetConfig(req: Request): Promise<Response> {
   const admin = getAdminClient();
 
@@ -746,13 +746,6 @@ async function handlePostConfig(body: any, callerRole?: string): Promise<Respons
     return err("Missing or invalid 'config' field");
   }
 
-  // Editor-allowed fields (Content, Market, Appearance, Legal)
-  const EDITOR_FIELDS = new Set([
-    "banners", "liveStreams", "articles", "marketPage",
-    "filing", "aboutUs", "privacyPolicy", "termsOfService", "technicalSupport",
-    "appBranding", "splashScreen", "homeIcons", "desktopIcon",
-  ]);
-
   const admin = getAdminClient();
 
   // --- Step 1: Read current version + config for optimistic lock + empty-URL merge ---
@@ -788,18 +781,13 @@ async function handlePostConfig(body: any, callerRole?: string): Promise<Respons
   let scopedConfig = config;
   if (callerRole === "editor") {
     const prev = (current?.config as Record<string, unknown>) ?? {};
-    scopedConfig = { ...prev };
-    for (const key of EDITOR_FIELDS) {
-      if (key in config) {
-        (scopedConfig as Record<string, unknown>)[key] = config[key];
-      }
-    }
+    scopedConfig = applyEditorFieldScope(config as Record<string, unknown>, prev);
   }
 
   const prevCfg = current?.config;
   const mergedConfig =
     prevCfg !== undefined && prevCfg !== null && typeof prevCfg === "object"
-      ? mergeConfigPreserveEmptyMediaUrls(scopedConfig, prevCfg)
+      ? mergeConfigEmptyStringOverwrites(scopedConfig, prevCfg)
       : scopedConfig;
 
   // --- Step 3: Write config ---

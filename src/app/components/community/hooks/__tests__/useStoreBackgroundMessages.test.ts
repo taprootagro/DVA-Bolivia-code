@@ -1,20 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
-import type { RealtimeChannel } from "@supabase/supabase-js";
 import { useStoreBackgroundMessages } from "../useStoreBackgroundMessages";
 import type { StorePeerRecord } from "../../../../services/storeChatDirectory";
 
-const removeChannelMock = vi.fn();
-const channelFactoryMock = vi.fn();
-const ensureEdgeSessionReadyMock = vi.fn();
+const subscribeChatInboxMock = vi.fn();
 const touchRecentMock = vi.fn();
+const cacheMessagesMock = vi.fn();
+const hasLocalMessageIdMock = vi.fn();
 
-vi.mock("../../../../utils/supabaseBrowser", () => ({
-  getSupabaseBrowserClient: vi.fn(),
+vi.mock("../../../../services/chatInbox", () => ({
+  subscribeChatInbox: (...args: unknown[]) => subscribeChatInboxMock(...args),
 }));
 
-vi.mock("../../../../utils/auth", () => ({
-  ensureEdgeSessionReady: (...args: unknown[]) => ensureEdgeSessionReadyMock(...args),
+vi.mock("../../../../services/chatLocalStore", () => ({
+  cacheMessages: (...args: unknown[]) => cacheMessagesMock(...args),
+  hasLocalMessageId: (...args: unknown[]) => hasLocalMessageIdMock(...args),
 }));
 
 vi.mock("../../../../services/storeChatDirectory", async (importOriginal) => {
@@ -24,8 +24,6 @@ vi.mock("../../../../services/storeChatDirectory", async (importOriginal) => {
     touchRecentWithPeerEnsure: (...args: unknown[]) => touchRecentMock(...args),
   };
 });
-
-import { getSupabaseBrowserClient } from "../../../../utils/supabaseBrowser";
 
 function makePeer(overrides: Partial<StorePeerRecord> = {}): StorePeerRecord {
   return {
@@ -46,86 +44,136 @@ function makePeer(overrides: Partial<StorePeerRecord> = {}): StorePeerRecord {
   };
 }
 
-describe("useStoreBackgroundMessages cleanup", () => {
+describe("useStoreBackgroundMessages inbox", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    removeChannelMock.mockReset();
-    channelFactoryMock.mockReset();
-    ensureEdgeSessionReadyMock.mockReset();
-    touchRecentMock.mockReset();
-
-    ensureEdgeSessionReadyMock.mockResolvedValue("edge-token");
+    subscribeChatInboxMock.mockImplementation((_uid: string, handler: (evt: unknown) => void) => {
+      (subscribeChatInboxMock as unknown as { handler?: (evt: unknown) => void }).handler = handler;
+      return vi.fn();
+    });
     touchRecentMock.mockResolvedValue(undefined);
+    cacheMessagesMock.mockResolvedValue(undefined);
+    hasLocalMessageIdMock.mockResolvedValue(false);
+  });
 
-    channelFactoryMock.mockImplementation((name: string) => {
-      const handlers: Record<string, (evt: { payload?: unknown }) => void> = {};
-      const ch = {
-        name,
-        on: vi.fn((_type: string, _filter: unknown, handler: (evt: { payload?: unknown }) => void) => {
-          handlers.message = handler;
-          return ch;
-        }),
-        subscribe: vi.fn(),
-        trigger: (payload: unknown) => handlers.message?.({ payload }),
-      } as unknown as RealtimeChannel & { trigger: (payload: unknown) => void };
-      return ch;
+  it("subscribes to inbox for store user", () => {
+    renderHook(() =>
+      useStoreBackgroundMessages("store-1", [makePeer()], null, vi.fn()),
+    );
+    expect(subscribeChatInboxMock).toHaveBeenCalledWith("store-1", expect.any(Function));
+  });
+
+  it("caches message and bumps unread for new incoming", async () => {
+    renderHook(() =>
+      useStoreBackgroundMessages("store-1", [makePeer()], null, vi.fn()),
+    );
+    const handler = (subscribeChatInboxMock as unknown as { handler: (evt: unknown) => void }).handler;
+    await act(async () => {
+      handler({
+        channelId: "channel-1",
+        row: {
+          id: "msg-1",
+          channel_id: "channel-1",
+          sender_id: "farmer-1",
+          msg_type: "text",
+          body: "hi",
+          media_url: null,
+          duration_ms: null,
+          created_at: new Date().toISOString(),
+        },
+        message: {
+          id: "msg-1",
+          channelName: "channel-1",
+          senderId: "farmer-1",
+          type: "text",
+          content: "hi",
+          timestamp: Date.now(),
+          status: "sent",
+          read: false,
+        },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
     });
+    expect(cacheMessagesMock).toHaveBeenCalled();
+    expect(touchRecentMock).toHaveBeenCalledWith(
+      "store-1",
+      expect.objectContaining({ channelId: "channel-1" }),
+      "hi",
+      true,
+    );
+  });
 
-    vi.mocked(getSupabaseBrowserClient).mockReturnValue({
-      auth: {
-        getSession: vi.fn().mockResolvedValue({
-          data: { session: { access_token: "session-token" } },
-        }),
+  function incoming(id: string) {
+    return {
+      channelId: "channel-1",
+      row: {
+        id,
+        channel_id: "channel-1",
+        sender_id: "farmer-1",
+        msg_type: "text",
+        body: id,
+        media_url: null,
+        duration_ms: null,
+        created_at: new Date().toISOString(),
       },
-      realtime: { setAuth: vi.fn() },
-      channel: channelFactoryMock,
-      removeChannel: removeChannelMock,
-    } as unknown as ReturnType<typeof getSupabaseBrowserClient>);
+      message: {
+        id,
+        channelName: "channel-1",
+        senderId: "farmer-1",
+        type: "text",
+        content: id,
+        timestamp: Date.now(),
+        status: "sent",
+        read: false,
+      },
+    };
+  }
+
+  it("debounces list refresh for a burst of inbox messages", async () => {
+    vi.useFakeTimers();
+    try {
+      const onRefresh = vi.fn();
+      const onIncoming = vi.fn();
+      renderHook(() =>
+        useStoreBackgroundMessages("store-1", [makePeer()], null, onRefresh, onIncoming),
+      );
+      const handler = (subscribeChatInboxMock as unknown as { handler: (evt: unknown) => void }).handler;
+      await act(async () => {
+        handler(incoming("m1"));
+        handler(incoming("m2"));
+        handler(incoming("m3"));
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(onIncoming).toHaveBeenCalledTimes(3);
+      expect(onRefresh).not.toHaveBeenCalled();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(300);
+      });
+      expect(onRefresh).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it("removes subscribed channels when hook unmounts", async () => {
-    const peers = [makePeer(), makePeer({ peerKey: "ch:channel-2", channelId: "channel-2", imUserId: "farmer-2" })];
-    const { unmount } = renderHook(() =>
-      useStoreBackgroundMessages("store-1", peers, null, vi.fn()),
-    );
-
-    await act(async () => {
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    expect(channelFactoryMock.mock.calls.length).toBeGreaterThan(0);
-    removeChannelMock.mockClear();
-
-    unmount();
-
-    expect(removeChannelMock.mock.calls.length).toBeGreaterThan(0);
-  });
-
-  it("removes all subscribed channels on dependency change", async () => {
-    const peers = [makePeer(), makePeer({ peerKey: "ch:channel-2", channelId: "channel-2", imUserId: "farmer-2" })];
-    const { rerender } = renderHook(
-      ({ activePeerKey }) =>
-        useStoreBackgroundMessages("store-1", peers, activePeerKey, vi.fn()),
-      { initialProps: { activePeerKey: null as string | null } },
-    );
-
-    await act(async () => {
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    const subscribedCount = channelFactoryMock.mock.calls.length;
-    expect(subscribedCount).toBeGreaterThan(0);
-    removeChannelMock.mockClear();
-
-    rerender({ activePeerKey: "ch:channel-1" });
-
-    await act(async () => {
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    expect(removeChannelMock).toHaveBeenCalled();
+  it("cancels a pending refresh on unmount", async () => {
+    vi.useFakeTimers();
+    try {
+      const onRefresh = vi.fn();
+      const { unmount } = renderHook(() =>
+        useStoreBackgroundMessages("store-1", [makePeer()], null, onRefresh),
+      );
+      const handler = (subscribeChatInboxMock as unknown as { handler: (evt: unknown) => void }).handler;
+      await act(async () => {
+        handler(incoming("m1"));
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      unmount();
+      await vi.advanceTimersByTimeAsync(300);
+      expect(onRefresh).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

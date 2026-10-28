@@ -62,6 +62,7 @@ export function ProductDetailPage({ onClose, product }: ProductDetailPageProps) 
             <CmsMediaImg
               src={heroImage}
               alt={latest.name}
+              loading="eager"
               className="h-full w-full object-fill"
             />
           )}

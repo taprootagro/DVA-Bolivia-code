@@ -193,6 +193,7 @@ export function SplashScreen() {
         <CmsMediaImg
           src={splash.imageUrl}
           alt=""
+          loading="eager"
           className="absolute inset-0 h-full w-full object-cover pointer-events-none"
           decoding="async"
           style={{
@@ -255,6 +256,7 @@ export function SplashScreen() {
                 <CmsMediaImg
                   src={config.appBranding.logoUrl}
                   alt="Logo"
+                  loading="eager"
                   className="w-full h-full object-cover"
                 />
               ) : (

@@ -531,6 +531,7 @@ export function LoginPage() {
               <CmsMediaImg 
                 src={config.appBranding.logoUrl} 
                 alt="Logo"
+                loading="eager"
                 className="w-full h-full object-cover"
                 onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
               />

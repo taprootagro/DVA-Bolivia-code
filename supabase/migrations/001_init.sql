@@ -23,7 +23,7 @@
 --   ✅ 3 个触发器 (自动版本递增、自动更新时间戳、自动历史快照)
 --   ✅ 辅助函数 (含 fn_is_content_super_admin、Dashboard 管理 app_config 等)
 --   ✅ Supabase 聊天保留：purge_chat_messages_older_than / purge_chat_media_storage_older_than
---      —— pg_cron 每小时清理 chat_messages + chat-media（云端仅 24h，手机本地 IndexedDB 长期保留）
+--      —— pg_cron 每小时清理 chat_messages + chat-media（云端仅 7d，手机本地 IndexedDB 长期保留）
 --   ✅ 聊天成本优化：chat_messages 移出 supabase_realtime publication；
 --      realtime.messages 加 RLS（仅 chat:<channel_id> 的参与者可订阅 broadcast）
 --   ✅ 种子数据 (完整的出厂默认配置)
@@ -356,6 +356,12 @@ CREATE TABLE IF NOT EXISTS ai_usage (
 CREATE INDEX IF NOT EXISTS idx_ai_usage_user_created
   ON ai_usage (user_id, created_at DESC);
 
+ALTER TABLE ai_usage ADD COLUMN IF NOT EXISTS model text;
+ALTER TABLE ai_usage ADD COLUMN IF NOT EXISTS prompt_tokens int;
+ALTER TABLE ai_usage ADD COLUMN IF NOT EXISTS completion_tokens int;
+ALTER TABLE ai_usage ADD COLUMN IF NOT EXISTS latency_ms int;
+ALTER TABLE ai_usage ADD COLUMN IF NOT EXISTS status text;
+
 ALTER TABLE ai_usage ENABLE ROW LEVEL SECURITY;
 
 DO $$ BEGIN
@@ -439,6 +445,24 @@ $$;
 
 REVOKE ALL ON FUNCTION public.ai_rate_limit_check(UUID, INT, INT) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.ai_rate_limit_check(UUID, INT, INT) TO service_role;
+
+-- Refund one daily slot + clear interval when upstream/provider failed (Edge calls after 503 UPSTREAM_BUSY / 5xx)
+CREATE OR REPLACE FUNCTION public.ai_rate_limit_refund(p_user_id UUID)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  UPDATE user_profiles
+     SET ai_calls_today = GREATEST(0, COALESCE(ai_calls_today, 0) - 1),
+         last_ai_call   = NULL
+   WHERE user_id = p_user_id;
+END
+$$;
+
+REVOKE ALL ON FUNCTION public.ai_rate_limit_refund(UUID) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.ai_rate_limit_refund(UUID) TO service_role;
 
 CREATE OR REPLACE FUNCTION public.purge_ai_usage_older_than(p_days INT DEFAULT 7)
 RETURNS INT
@@ -524,12 +548,15 @@ DO $$ BEGIN
   END IF;
 END $$;
 
--- 返回值：'OK' | 'QUEUE'
+-- 返回值：'OK' | 'QUEUE'（p_max 由 Edge 按 AI_QUEUE_MAX_CAP / app_config 钳制，库内仅保证 >= 1）
+DROP FUNCTION IF EXISTS public.ai_queue_try_acquire(INT, INT, UUID, TEXT);
+
 CREATE OR REPLACE FUNCTION public.ai_queue_try_acquire(
   p_max         INT,
   p_lease_sec   INT,
   p_user_id     UUID DEFAULT NULL,
-  p_route       TEXT DEFAULT NULL
+  p_route       TEXT DEFAULT NULL,
+  p_retry_sec   INT DEFAULT 8
 )
 RETURNS TABLE (
   status               TEXT,
@@ -546,11 +573,13 @@ DECLARE
   v_lease  UUID;
   v_max    INT;
   v_sec    INT;
+  v_retry  INT;
 BEGIN
   PERFORM pg_advisory_xact_lock(hashtext('ai_queue_lease'));
 
-  v_max := GREATEST(5, LEAST(100, COALESCE(p_max, 100)));
+  v_max := GREATEST(1, COALESCE(p_max, 100));
   v_sec := GREATEST(30, LEAST(300, COALESCE(p_lease_sec, 120)));
+  v_retry := GREATEST(3, LEAST(30, COALESCE(p_retry_sec, 8)));
 
   DELETE FROM ai_queue_lease WHERE expires_at <= now();
 
@@ -571,14 +600,14 @@ BEGIN
 
   status := 'QUEUE';
   lease_id := NULL;
-  retry_after_seconds := 6 + floor(random() * 4)::INT;
+  retry_after_seconds := v_retry + floor(random() * 4)::INT;
   queue_depth := GREATEST(1, v_active - v_max + 1);
   RETURN NEXT;
 END
 $$;
 
-REVOKE ALL ON FUNCTION public.ai_queue_try_acquire(INT, INT, UUID, TEXT) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.ai_queue_try_acquire(INT, INT, UUID, TEXT) TO service_role;
+REVOKE ALL ON FUNCTION public.ai_queue_try_acquire(INT, INT, UUID, TEXT, INT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.ai_queue_try_acquire(INT, INT, UUID, TEXT, INT) TO service_role;
 
 CREATE OR REPLACE FUNCTION public.ai_queue_release(p_lease_id UUID)
 RETURNS VOID
@@ -1329,16 +1358,16 @@ VALUES (
       },
       "communityUiMode": "store",
       "chatContact": {
-            "merchantUserId": "e6dbb6c7-1117-4495-abb5-8bc0f47693c8",
-            "channelId": "73221b15-b29c-40f2-92e7-53a80b782bc0",
-            "name": "rick wang",
-            "avatar": "https://lh3.googleusercontent.com/a/ACg8ocKed7CvoEavg1W6g_YinlrXyS9lGHQkVGDs5-6q9iJaVn8eDb4=s96-c",
+            "merchantUserId": "",
+            "channelId": "",
+            "name": "",
+            "avatar": "",
             "subtitle": "",
             "verifiedDomains": [
                   "topagro.com"
             ],
-            "boundAt": 1779695811990,
-            "boundFrom": "topagro.com",
+            "boundAt": 0,
+            "boundFrom": "",
             "phone": "",
             "storeId": "",
             "imUserId": "",
@@ -1382,8 +1411,7 @@ VALUES (
             "clientCooldownSeconds": 20,
             "clientWindowPerMin": 6,
             "supabaseUrl": "",
-            "supabaseAnonKey": "",
-            "allowUnauthenticatedUse": false
+            "supabaseAnonKey": ""
       },
       "pushConfig": {
             "vapidPublicKey": "BJ1YYF0-4bU8LqTd_TPHhCgpGUlrnPpnGWxG1QQIRu79Zeqs6d4uGbPlR_VZs2refsNWSNDkw2PpjKJZEyDPGLk",
@@ -1667,6 +1695,12 @@ CREATE INDEX IF NOT EXISTS idx_chat_messages_channel_created
 CREATE INDEX IF NOT EXISTS idx_chat_messages_sender_created
   ON chat_messages (sender_id, created_at DESC);
 
+ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS client_msg_id TEXT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_messages_sender_client_msg
+  ON chat_messages (sender_id, client_msg_id)
+  WHERE client_msg_id IS NOT NULL;
+
 ALTER TABLE chat_messages ENABLE ROW LEVEL SECURITY;
 
 -- 只有该 channel 对应的门店/农户可以 SELECT（需农户/门店 JWT）；匿名与其他用户一律拒绝。
@@ -1701,15 +1735,30 @@ END $$;
 
 -- ---------------------------------------------------------------------------
 -- Storage: chat-media（公开读，写由 Edge service_role）
+-- 体积/类型由 Storage 在 PUT 时强制（含 /upload/sign 签名直传）。桶只有一个上限，取
+-- chat-supabase MAX_VIDEO（50 MiB）；分类型上限（图 12 MiB / 语音 8 MiB）由 Edge maxBytes 与客户端校验。
+-- 音视频用通配：MediaRecorder 的 Content-Type 带 codecs 参数（audio/webm;codecs=opus）。
 -- ---------------------------------------------------------------------------
-INSERT INTO storage.buckets (id, name, public)
-VALUES ('chat-media', 'chat-media', true)
-ON CONFLICT (id) DO UPDATE SET public = EXCLUDED.public;
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+VALUES (
+  'chat-media', 'chat-media', true, 52428800,
+  ARRAY['image/jpeg', 'image/png', 'image/webp', 'audio/*', 'video/*']
+)
+ON CONFLICT (id) DO UPDATE SET
+  public = EXCLUDED.public,
+  file_size_limit = EXCLUDED.file_size_limit,
+  allowed_mime_types = EXCLUDED.allowed_mime_types;
 
 DROP POLICY IF EXISTS chat_media_public_read ON storage.objects;
 CREATE POLICY chat_media_public_read ON storage.objects
   FOR SELECT TO public
   USING (bucket_id = 'chat-media');
+
+-- C7 灰度：默认保持公开读。打开 Edge secret CHAT_MEDIA_PRIVATE=true 后，在 SQL Editor 执行：
+--   UPDATE storage.buckets SET public = false WHERE id = 'chat-media';
+--   DROP POLICY IF EXISTS chat_media_public_read ON storage.objects;
+-- 消息体改存 object path，由 chat-supabase createSignedUrl（1h）或 GET /media/sign 签发。
+-- 切私有前必须先部署带 CHAT_MEDIA_PRIVATE 的 Edge 与前端，否则旧客户端直链会 403。
 
 -- ---------------------------------------------------------------------------
 -- Storage: cms-public（Config Manager 上传；公开读，写仅 content_super_admin）
@@ -1968,7 +2017,7 @@ $reschedule_merchant_bind_rl_purge$;
 -- ---------------------------------------------------------------------------
 -- 10b. Supabase 聊天：云端消息/媒体保留（仅 chat_messages + chat-media；腾讯 IM / CometChat 不写本表）
 -- ---------------------------------------------------------------------------
--- 云端策略：保留 24 小时（每小时清理 chat_messages + chat-media 桶）。
+-- 云端策略：保留 7 天（每小时清理 chat_messages + chat-media 桶）。
 -- 客户端策略：消息 + 媒体 blob 落 IndexedDB（见 src/app/services/chatLocalStore.ts），
 --            历史长期保留靠手机本地；loadOlder 先本地后服务端。
 -- 无 pg_cron 时可用 Edge POST /admin/purge-old（见 farmer-developer/SUPABASE_CN.md）。
@@ -2019,9 +2068,9 @@ REVOKE ALL ON FUNCTION public.purge_chat_media_storage_older_than(int) FROM PUBL
 GRANT EXECUTE ON FUNCTION public.purge_chat_media_storage_older_than(int) TO service_role;
 GRANT EXECUTE ON FUNCTION public.purge_chat_media_storage_older_than(int) TO postgres;
 
--- pg_cron 调度：每小时清理 messages + storage，保留窗口 = 1 天
--- 取消所有旧任务（14d / 1d 双版本）→ 重新挂 1d 每小时任务；错峰 :07 / :23
-DO $reschedule_chat_purge_24h$
+-- pg_cron 调度：每小时清理 messages + storage，保留窗口 = 7 天
+-- 取消所有旧任务（14d / 1d / 7d）→ 重新挂 7d 每小时任务；错峰 :07 / :23
+DO $reschedule_chat_purge_7d$
 DECLARE
   r RECORD;
   has_cron BOOLEAN;
@@ -2030,44 +2079,46 @@ BEGIN
   IF NOT has_cron THEN
     RAISE NOTICE
       'pg_cron not installed — enable it in Dashboard → Database → Extensions, then re-run this migration. '
-      'Workaround: schedule POST /chat-supabase/admin/purge-old { days:1, includeStorage:true } from your own scheduler.';
+      'Workaround: schedule POST /chat-supabase/admin/purge-old { days:7, includeStorage:true } from your own scheduler.';
     RETURN;
   END IF;
 
-  -- 取消所有旧的 chat purge 任务（避免与 24h 任务并存）
+  -- 取消所有旧的 chat purge 任务（避免多版本并存）
   FOR r IN
     SELECT jobid, jobname FROM cron.job
     WHERE jobname IN (
       'purge-chat-messages-14d',
       'purge-chat-messages-1d',
-      'purge-chat-storage-1d'
+      'purge-chat-storage-1d',
+      'purge-chat-messages-7d',
+      'purge-chat-storage-7d'
     )
   LOOP
     PERFORM cron.unschedule(r.jobid);
     RAISE NOTICE 'unscheduled cron job %', r.jobname;
   END LOOP;
 
-  -- 每小时清理 chat_messages 中 created_at < now() - 1 day
+  -- 每小时清理 chat_messages 中 created_at < now() - 7 days
   PERFORM cron.schedule(
-    'purge-chat-messages-1d',
+    'purge-chat-messages-7d',
     '7 * * * *',  -- 每小时第 7 分（错峰 storage 任务）
-    'SELECT public.purge_chat_messages_older_than(1);'
+    'SELECT public.purge_chat_messages_older_than(7);'
   );
-  RAISE NOTICE 'scheduled purge-chat-messages-1d (hourly @ :07, retention=1d)';
+  RAISE NOTICE 'scheduled purge-chat-messages-7d (hourly @ :07, retention=7d)';
 
-  -- 每小时清理 chat-media bucket 中 created_at < now() - 1 day
+  -- 每小时清理 chat-media bucket 中 created_at < now() - 7 days
   PERFORM cron.schedule(
-    'purge-chat-storage-1d',
+    'purge-chat-storage-7d',
     '23 * * * *', -- 每小时第 23 分（与 messages 错峰，留出复制延迟空间）
-    'SELECT public.purge_chat_media_storage_older_than(1);'
+    'SELECT public.purge_chat_media_storage_older_than(7);'
   );
-  RAISE NOTICE 'scheduled purge-chat-storage-1d (hourly @ :23, retention=1d)';
+  RAISE NOTICE 'scheduled purge-chat-storage-7d (hourly @ :23, retention=7d)';
 
 EXCEPTION
   WHEN OTHERS THEN
     RAISE NOTICE 'pg_cron schedule failed (%); fall back to Edge /admin/purge-old', SQLERRM;
 END
-$reschedule_chat_purge_24h$;
+$reschedule_chat_purge_7d$;
 
 -- ---------------------------------------------------------------------------
 -- 10c. cms-public：删除未被 app_config / config_history 引用的对象（未推送草稿图等）
@@ -2376,7 +2427,56 @@ GRANT EXECUTE ON FUNCTION public.is_chat_channel_participant(TEXT) TO authentica
 GRANT EXECUTE ON FUNCTION public.is_chat_channel_participant(TEXT) TO service_role;
 
 
--- 实际策略：订阅（SELECT）限制为参与者；非 chat:* topic 走默认（Supabase 托管策略通常允许）
+CREATE OR REPLACE FUNCTION public.is_inbox_owner(p_topic TEXT)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_uid UUID;
+BEGIN
+  IF p_topic IS NULL OR p_topic NOT LIKE 'inbox:%' THEN
+    RETURN false;
+  END IF;
+  v_uid := auth.uid();
+  IF v_uid IS NULL THEN
+    RETURN false;
+  END IF;
+  RETURN p_topic = ('inbox:' || v_uid::text);
+END;
+$$;
+
+COMMENT ON FUNCTION public.is_inbox_owner(TEXT) IS
+  'Realtime Authorization — true when auth.uid() owns inbox:<user_id> topic.';
+
+REVOKE ALL ON FUNCTION public.is_inbox_owner(TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.is_inbox_owner(TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.is_inbox_owner(TEXT) TO service_role;
+
+
+-- 清除出厂种子误写入的真实 chatContact（仅当仍为测试 ID 时）
+UPDATE public.app_config
+SET config = jsonb_set(
+      jsonb_set(
+        jsonb_set(
+          jsonb_set(
+            jsonb_set(config, '{chatContact,merchantUserId}', '""'::jsonb),
+            '{chatContact,channelId}', '""'::jsonb
+          ),
+          '{chatContact,name}', '""'::jsonb
+        ),
+        '{chatContact,avatar}', '""'::jsonb
+      ),
+      '{chatContact,boundAt}', '0'::jsonb
+    ),
+    updated_at = now()
+WHERE (config->'chatContact'->>'channelId') = '73221b15-b29c-40f2-92e7-53a80b782bc0'
+  AND (config->'chatContact'->>'merchantUserId') = 'e6dbb6c7-1117-4495-abb5-8bc0f47693c8';
+
+
+-- 实际策略：chat:* 仅参与者；inbox:* 仅本人；其它 topic 走平台默认
 DO $create_realtime_policy$
 BEGIN
   IF EXISTS (
@@ -2392,9 +2492,18 @@ BEGIN
           FOR SELECT
           TO authenticated
           USING (
-            -- 非 chat:* topic 不在本策略约束范围 —— Supabase 其它默认策略继续适用
-            (realtime.topic()) NOT LIKE 'chat:%'
-            OR public.is_chat_channel_participant(realtime.topic())
+            (
+              (realtime.topic()) NOT LIKE 'chat:%'
+              AND (realtime.topic()) NOT LIKE 'inbox:%'
+            )
+            OR (
+              (realtime.topic()) LIKE 'chat:%'
+              AND public.is_chat_channel_participant(realtime.topic())
+            )
+            OR (
+              (realtime.topic()) LIKE 'inbox:%'
+              AND public.is_inbox_owner(realtime.topic())
+            )
           )
       $policy$;
       RAISE NOTICE 'A2: policy chat_broadcast_participants_only created on realtime.messages';

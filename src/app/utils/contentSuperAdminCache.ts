@@ -8,7 +8,7 @@ export type ContentSuperAdminCachePayload = {
 };
 
 /** CMS content-role cache TTL — stale entries must not grant CMS UI. */
-export const CONTENT_SUPER_ADMIN_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+export const CONTENT_SUPER_ADMIN_CACHE_TTL_MS = 60 * 60 * 1000;
 
 export function readContentSuperAdminCache(): ContentSuperAdminCachePayload | null {
   const cached = storageGetJSON<ContentSuperAdminCachePayload>(

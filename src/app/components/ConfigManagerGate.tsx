@@ -6,7 +6,7 @@ import { useLanguage } from "../hooks/useLanguage";
 import { createCmsTranslator } from "../i18n/cmsTranslate";
 import enTranslations from "../i18n/lang/en";
 import { isUserLoggedIn, isServerAssignedId } from "../utils/auth";
-import { isDeveloperMode } from "../utils/developerMode";
+import { canOpenConfigManager } from "../utils/canOpenConfigManager";
 import { SkeletonScreen } from "./SkeletonScreen";
 
 const ConfigManagerPageLazy = lazy(() => import("./ConfigManagerPage"));
@@ -21,12 +21,12 @@ export function ConfigManagerGate() {
 
   const ct = createCmsTranslator(t, language, enTranslations);
 
-  const allowed =
-    isDeveloperMode() ||
-    (!loading &&
-      isUserLoggedIn() &&
-      isServerAssignedId() &&
-      (contentRole === 'admin' || contentRole === 'editor'));
+  const allowed = canOpenConfigManager({
+    loggedIn: isUserLoggedIn(),
+    contentRole,
+    loading,
+    requireServerAssignedId: true,
+  });
 
   if (allowed) {
     return (

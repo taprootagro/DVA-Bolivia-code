@@ -146,11 +146,23 @@ export class SupabaseChatAdapter implements IIMAdapter {
     return k ? { Authorization: authHeader, apikey: k } : {};
   }
 
-  private async apiJson<T>(path: string, init?: RequestInit): Promise<T> {
-    const res = await fetch(`${this.baseUrl()}${path}`, {
-      ...init,
-      headers: { ...this.headers(), ...(init?.headers || {}) },
-    });
+  private async apiJson<T>(
+    path: string,
+    init?: RequestInit & { timeoutMs?: number },
+  ): Promise<T> {
+    const timeoutMs = init?.timeoutMs ?? 20_000;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let res: Response;
+    try {
+      res = await fetch(`${this.baseUrl()}${path}`, {
+        ...init,
+        signal: controller.signal,
+        headers: { ...this.headers(), ...(init?.headers || {}) },
+      });
+    } finally {
+      clearTimeout(timer);
+    }
     const text = await res.text();
     if (!res.ok) {
       if (res.status === 429) {
@@ -203,6 +215,20 @@ export class SupabaseChatAdapter implements IIMAdapter {
    * 仅释放当前 channel + 重置会话级状态；共享 client 不动。
    * 切换会话或可见性变化时调用都很轻量。
    */
+  private async removeRealtimeChannelAndWait(): Promise<void> {
+    if (!this._realtime || !this._client) {
+      this._realtime = null;
+      return;
+    }
+    const ch = this._realtime;
+    this._realtime = null;
+    try {
+      await this._client.removeChannel(ch);
+    } catch {
+      /* ignore */
+    }
+  }
+
   private releaseChannel(): void {
     if (this._retryTimer != null) {
       clearTimeout(this._retryTimer);
@@ -211,10 +237,7 @@ export class SupabaseChatAdapter implements IIMAdapter {
     this._retryAttempts = 0;
     this._lastServerTs = 0;
     this._wasSubscribedOnce = false;
-    if (this._realtime && this._client) {
-      void this._client.removeChannel(this._realtime);
-    }
-    this._realtime = null;
+    void this.removeRealtimeChannelAndWait();
   }
 
   disconnect(): void {
@@ -241,52 +264,54 @@ export class SupabaseChatAdapter implements IIMAdapter {
   private setupChannelInner(): void {
     if (!this._connected || !this._client || !this._channelName) return;
 
-    if (this._realtime) {
-      void this._client.removeChannel(this._realtime);
-      this._realtime = null;
-    }
-
     const channelName = this._channelName;
-    const ch = this._client.channel(`chat:${channelName}`);
+    const client = this._client;
 
-    ch.on(
-      "broadcast",
-      { event: "message" },
-      (evt: { payload?: unknown }) => {
-        const payload = evt?.payload as Parameters<typeof rowToMessage>[0] | undefined;
-        if (!payload?.id) return;
-        const msg = rowToMessage(payload);
-        this.updateLastServerTs(msg.timestamp);
-        this._listeners.forEach((fn) => fn(msg));
-      },
-    );
+    void this.removeRealtimeChannelAndWait().then(() => {
+      if (!this._connected || !this._client || this._channelName !== channelName) return;
 
-    ch.subscribe((status, err) => {
-      if (status === "SUBSCRIBED") {
-        console.log("[SupabaseChat] Realtime subscribed:", channelName);
-        this._retryAttempts = 0;
-        if (this._retryTimer != null) {
-          clearTimeout(this._retryTimer);
-          this._retryTimer = null;
+      const ch = client.channel(`chat:${channelName}`, {
+        config: { private: true, broadcast: { ack: false, self: false } },
+      });
+
+      ch.on(
+        "broadcast",
+        { event: "message" },
+        (evt: { payload?: unknown }) => {
+          const payload = evt?.payload as Parameters<typeof rowToMessage>[0] | undefined;
+          if (!payload?.id) return;
+          const msg = rowToMessage(payload);
+          this.updateLastServerTs(msg.timestamp);
+          this._listeners.forEach((fn) => fn(msg));
+        },
+      );
+
+      ch.subscribe((status, err) => {
+        if (status === "SUBSCRIBED") {
+          console.log("[SupabaseChat] Realtime subscribed:", channelName);
+          this._retryAttempts = 0;
+          if (this._retryTimer != null) {
+            clearTimeout(this._retryTimer);
+            this._retryTimer = null;
+          }
+          if (this._wasSubscribedOnce && this._lastServerTs > 0) {
+            void this.catchUpSince(this._lastServerTs);
+          }
+          this._wasSubscribedOnce = true;
+          return;
         }
-        // 重连成功且已有基线时间戳 → 启动增量补拉对齐缺失消息
-        if (this._wasSubscribedOnce && this._lastServerTs > 0) {
-          void this.catchUpSince(this._lastServerTs);
+        if (
+          status === "CHANNEL_ERROR" ||
+          status === "TIMED_OUT" ||
+          status === "CLOSED"
+        ) {
+          console.warn(`[SupabaseChat] channel status: ${status}`, err);
+          this.scheduleRetry();
         }
-        this._wasSubscribedOnce = true;
-        return;
-      }
-      if (
-        status === "CHANNEL_ERROR" ||
-        status === "TIMED_OUT" ||
-        status === "CLOSED"
-      ) {
-        console.warn(`[SupabaseChat] channel status: ${status}`, err);
-        this.scheduleRetry();
-      }
+      });
+
+      this._realtime = ch;
     });
-
-    this._realtime = ch;
   }
 
   /** 指数退避重连（0.5s 起，倍增至 30s 封顶；disconnect 后自动失效） */
@@ -376,10 +401,16 @@ export class SupabaseChatAdapter implements IIMAdapter {
         token: string;
         objectPath: string;
         publicUrl: string;
+        maxBytes?: number;
+        private?: boolean;
       }>("/upload/sign", {
         method: "POST",
         body: JSON.stringify({ channel_id: channelId, kind, ext }),
       });
+
+      if (typeof sign.maxBytes === "number" && blob.size > sign.maxBytes) {
+        throw new Error("CHAT_MEDIA_TOO_LARGE");
+      }
 
       const putRes = await fetch(sign.uploadUrl, {
         method: "PUT",
@@ -395,6 +426,9 @@ export class SupabaseChatAdapter implements IIMAdapter {
       }
       return sign.publicUrl;
     } catch (e) {
+      const m = e instanceof Error ? e.message : "";
+      // legacy /upload enforces the same size cap and rate limiter — falling back would only waste the upload
+      if (m === "CHAT_MEDIA_TOO_LARGE" || m.startsWith("CHAT_RATE_LIMIT")) throw e;
       console.warn(`[SupabaseChat] direct upload failed, fallback to /upload`, e);
       return this.uploadMediaLegacy(blob, kind, channelId, senderId, ext);
     }
@@ -466,6 +500,7 @@ export class SupabaseChatAdapter implements IIMAdapter {
             sender_id: senderId,
             msg_type: "text",
             body: msg.content,
+            client_msg_id: msg.id,
           }),
         });
         const created = data.message?.created_at as string | undefined;
@@ -490,11 +525,13 @@ export class SupabaseChatAdapter implements IIMAdapter {
         const url = await this.uploadMedia(blob, "image", ext, channelId, senderId);
         const data = await this.apiJson<{ message: Record<string, unknown> }>("/messages", {
           method: "POST",
+          timeoutMs: 60_000,
           body: JSON.stringify({
             channel_id: channelId,
             sender_id: senderId,
             msg_type: "image",
             media_url: url,
+            client_msg_id: msg.id,
           }),
         });
         const created = data.message?.created_at as string | undefined;
@@ -514,12 +551,14 @@ export class SupabaseChatAdapter implements IIMAdapter {
         const durationMs = msg.duration != null ? Math.round(msg.duration * 1000) : null;
         const data = await this.apiJson<{ message: Record<string, unknown> }>("/messages", {
           method: "POST",
+          timeoutMs: 60_000,
           body: JSON.stringify({
             channel_id: channelId,
             sender_id: senderId,
             msg_type: "voice",
             media_url: url,
             duration_ms: durationMs,
+            client_msg_id: msg.id,
           }),
         });
         const created = data.message?.created_at as string | undefined;
@@ -539,11 +578,13 @@ export class SupabaseChatAdapter implements IIMAdapter {
         const url = await this.uploadMedia(msg.videoBlob, "video", ext, channelId, senderId);
         const data = await this.apiJson<{ message: Record<string, unknown> }>("/messages", {
           method: "POST",
+          timeoutMs: 60_000,
           body: JSON.stringify({
             channel_id: channelId,
             sender_id: senderId,
             msg_type: "video",
             media_url: url,
+            client_msg_id: msg.id,
           }),
         });
         const created = data.message?.created_at as string | undefined;
@@ -560,6 +601,7 @@ export class SupabaseChatAdapter implements IIMAdapter {
       return { success: false, error: "Unsupported or missing media" };
     } catch (e: unknown) {
       const m = e instanceof Error ? e.message : String(e);
+      if (m.startsWith("CHAT_RATE_LIMIT")) throw e;
       console.error("[SupabaseChat] send failed", e);
       return { success: false, error: m };
     }

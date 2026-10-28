@@ -143,8 +143,8 @@ export const STORE_PEER_LIMIT_CODE = "STORE_PEER_LIMIT";
 
 export async function countPeersForStore(storeUserId: string): Promise<number> {
   const db = await getDb();
-  const all = await db.getAll<StorePeerRecord>("storePeers");
-  return all.filter((r) => r.storeUserId === storeUserId).length;
+  const mine = await db.getAllFromIndex<StorePeerRecord>("storePeers", "byStoreUser", storeUserId);
+  return mine.length;
 }
 
 export async function upsertPeer(
@@ -172,7 +172,16 @@ export async function upsertPeer(
       throw err;
     }
   }
-  const name = resolvePeerDisplayName(partial.name, existing?.name, partial.imUserId);
+  const mergeOptional = (incoming: string | undefined, prev: string | undefined) => {
+    const inc = (incoming ?? "").trim();
+    if (inc) return inc;
+    return (prev ?? "").trim();
+  };
+  const incomingName = (partial.name ?? "").trim();
+  const name =
+    incomingName && incomingName !== "Farmer"
+      ? incomingName
+      : resolvePeerDisplayName(partial.name, existing?.name, partial.imUserId);
   const incomingAvatar = (partial.avatar ?? "").trim();
   const existingAvatar = (existing?.avatar ?? "").trim();
   const avatar = incomingAvatar || existingAvatar;
@@ -182,12 +191,12 @@ export async function upsertPeer(
     peerKey: partial.peerKey,
     name,
     avatar,
-    subtitle: partial.subtitle ?? existing?.subtitle ?? "",
+    subtitle: mergeOptional(partial.subtitle, existing?.subtitle),
     imUserId: partial.imUserId,
     channelId: partial.channelId,
-    imProvider: partial.imProvider ?? existing?.imProvider ?? "tencent-im",
-    phone: partial.phone ?? existing?.phone ?? "",
-    storeId: partial.storeId ?? existing?.storeId ?? "",
+    imProvider: partial.imProvider ?? existing?.imProvider ?? "supabase",
+    phone: mergeOptional(partial.phone, existing?.phone),
+    storeId: mergeOptional(partial.storeId, existing?.storeId),
     sortLetter: sortLetterFromName(name),
     updatedAt: Date.now(),
   };
@@ -253,8 +262,7 @@ export async function clearUnread(storeUserId: string, peerKey: string): Promise
 
 export async function listPeersSorted(storeUserId: string): Promise<StorePeerRecord[]> {
   const db = await getDb();
-  const all = await db.getAll<StorePeerRecord>("storePeers");
-  const mine = all.filter((r) => r.storeUserId === storeUserId);
+  const mine = await db.getAllFromIndex<StorePeerRecord>("storePeers", "byStoreUser", storeUserId);
   return mine
     .sort((a, b) => {
       const la = (a.name || "").localeCompare(b.name || "", "zh-Hans-CN", { sensitivity: "base" });
@@ -265,10 +273,10 @@ export async function listPeersSorted(storeUserId: string): Promise<StorePeerRec
 
 export async function listRecents(storeUserId: string): Promise<StoreRecentRecord[]> {
   const db = await getDb();
-  const all = await db.getAll<StoreRecentRecord>("storeRecents");
+  const mine = await db.getAllFromIndex<StoreRecentRecord>("storeRecents", "byStoreUser", storeUserId);
   const deleted = new Set(await listDeletedPeerKeys(storeUserId));
-  return all
-    .filter((r) => r.storeUserId === storeUserId && !deleted.has(r.peerKey))
+  return mine
+    .filter((r) => !deleted.has(r.peerKey))
     .sort((a, b) => b.lastMessageAt - a.lastMessageAt);
 }
 
@@ -279,8 +287,8 @@ export async function getPeer(storeUserId: string, peerKey: string): Promise<Sto
 
 export async function listBlockedPeerKeys(storeUserId: string): Promise<string[]> {
   const db = await getDb();
-  const all = await db.getAll<StoreBlockedRecord>("storeBlocked");
-  return all.filter((r) => r.storeUserId === storeUserId).map((r) => r.peerKey);
+  const mine = await db.getAllFromIndex<StoreBlockedRecord>("storeBlocked", "byStoreUser", storeUserId);
+  return mine.map((r) => r.peerKey);
 }
 
 async function listDeletedPeerKeys(storeUserId: string): Promise<string[]> {

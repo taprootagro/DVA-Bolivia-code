@@ -24,6 +24,9 @@ export function useVoiceSystem(chatMessages: ChatMessage[], currentUserId: strin
   // 用 ref 跟踪 ttsEnabled 的最新值，避免 speakText 回调频繁重建
   const ttsEnabledRef = useRef(ttsEnabled);
   ttsEnabledRef.current = ttsEnabled;
+  // toggleVoicePlay 读 ref，避免每条新消息都重建回调、击穿 MessageBubble memo
+  const chatMessagesRef = useRef(chatMessages);
+  chatMessagesRef.current = chatMessages;
 
   // Real audio playback ref
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -97,7 +100,7 @@ export function useVoiceSystem(chatMessages: ChatMessage[], currentUserId: strin
       stopCurrentAudio();
 
       // 查找消息获取音频 URL
-      const msg = chatMessages.find(m => m.id === msgId);
+      const msg = chatMessagesRef.current.find(m => m.id === msgId);
       const audioUrl = msg?.audioUrl || msg?.content;
 
       if (audioUrl && audioUrl !== '' && audioUrl !== '[Voice]') {
@@ -159,7 +162,7 @@ export function useVoiceSystem(chatMessages: ChatMessage[], currentUserId: strin
 
       return msgId;
     });
-  }, [chatMessages, stopCurrentAudio]);
+  }, [stopCurrentAudio]);
 
   // 新收到的文字消息自动朗读（仅实时消息，跳过打开线程时拉取的历史）
   const LIVE_TTS_MAX_AGE_MS = 120000;

@@ -24,6 +24,9 @@ export interface CompressOptions {
   forceReencode?: boolean;
 }
 
+/** Thrown when canvas cannot decode or re-encode the image */
+export const IMAGE_DECODE_FAILED = "IMAGE_DECODE_FAILED";
+
 /** AI 云端识图统一上限（深度分析 + 追问带图共用） */
 export const AI_VISION_IMAGE_LIMITS = {
   maxSize: 1024,
@@ -106,20 +109,24 @@ export function compressImageBase64(
     maxQualityAttempts = 3,
   } = options;
 
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => {
-      const result = compressFromImage(img, maxSize, quality, maxBytes, format, maxQualityAttempts);
-      const origKB = Math.round(base64.length * 0.75 / 1024);
-      const compKB = Math.round(result.length * 0.75 / 1024);
-      if (compKB < origKB) {
-        console.log(
-          `[ImageCompressor] ${img.naturalWidth}x${img.naturalHeight} → compressed, ${origKB}KB → ${compKB}KB (${Math.round((1 - compKB / origKB) * 100)}% saved)`,
-        );
+      try {
+        const result = compressFromImage(img, maxSize, quality, maxBytes, format, maxQualityAttempts);
+        const origKB = Math.round(base64.length * 0.75 / 1024);
+        const compKB = Math.round(result.length * 0.75 / 1024);
+        if (compKB < origKB) {
+          console.log(
+            `[ImageCompressor] ${img.naturalWidth}x${img.naturalHeight} → compressed, ${origKB}KB → ${compKB}KB (${Math.round((1 - compKB / origKB) * 100)}% saved)`,
+          );
+        }
+        resolve(result);
+      } catch {
+        reject(new Error(IMAGE_DECODE_FAILED));
       }
-      resolve(result);
     };
-    img.onerror = () => resolve(base64);
+    img.onerror = () => reject(new Error(IMAGE_DECODE_FAILED));
     img.src = base64;
   });
 }
@@ -169,7 +176,7 @@ export function compressImageFile(
       .catch(() => {
         const reader = new FileReader();
         reader.onload = (e) => {
-          compressImageBase64(e.target?.result as string, options).then(resolve);
+          compressImageBase64(e.target?.result as string, options).then(resolve).catch(reject);
         };
         reader.onerror = () => reject(new Error("Failed to read file"));
         reader.readAsDataURL(file);
@@ -255,7 +262,10 @@ function compressFromImage(
   const canvas = document.createElement("canvas");
   canvas.width = w;
   canvas.height = h;
-  const ctx = canvas.getContext("2d")!;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    throw new Error(IMAGE_DECODE_FAILED);
+  }
   ctx.drawImage(img, 0, 0, w, h);
 
   let result = canvasToDataUrl(canvas, quality, format);
@@ -298,7 +308,10 @@ function compressFromBitmap(
   const canvas = document.createElement("canvas");
   canvas.width = w;
   canvas.height = h;
-  const ctx = canvas.getContext("2d")!;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    throw new Error(IMAGE_DECODE_FAILED);
+  }
   ctx.drawImage(bitmap, 0, 0, w, h);
 
   let result = canvasToDataUrl(canvas, quality, format);

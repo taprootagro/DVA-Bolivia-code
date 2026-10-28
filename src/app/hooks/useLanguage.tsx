@@ -166,6 +166,12 @@ export interface Translations {
     contactBlockedLabel?: string;
     peerLimitReached?: string;
     threadInputBlockedHint?: string;
+    /** chat-supabase 429 CHAT_RATE_LIMIT；{seconds} 为服务端 retry_after */
+    sendTooFastWait?: string;
+    sendTooFast?: string;
+    liveChatFailed?: string;
+    liveChatConnectFailed?: string;
+    liveChatReconnectFailed?: string;
     storeScanRejectMerchantBindQr?: string;
     scanNeedFarmerLogin?: string;
     qrNotSupported?: string;
@@ -353,6 +359,8 @@ export interface Translations {
     accountDeleteFailed: string;
     accountDeleteSessionExpired: string;
     accountDeleteRateLimited: string;
+    /** 服务端账号但未配置后端（无 /account/delete endpoint），不能本地假删 */
+    accountDeleteBackendUnavailable?: string;
     accountDeleteInProgress: string;
     accountDeleteCmsWarning: string;
     accountDeletedSenderLabel: string;
@@ -539,6 +547,7 @@ export interface Translations {
     cooldownWait: string;
     /** Image too small after compression for cloud vision */
     imageTooSmall: string;
+    imageUnreadable?: string;
     /** 追问连发过快（客户端或服务端限流） */
     chatMessageTooFast: string;
     /** 全站 AI 并发满员，客户端自动重试排队中 */
@@ -569,6 +578,8 @@ export interface Translations {
     aiLoginRequired: string;
     /** 登录与 Supabase 项目不一致等时的补充说明（可选，与 zh 等语言一致） */
     cloudAiNotLoggedInHint?: string;
+    /** 上游 AI 密钥或模型配置错误（Edge 502 PROVIDER_AUTH / PROVIDER_CONFIG），重试无效 */
+    providerMisconfigured?: string;
   };
 
   video?: {
